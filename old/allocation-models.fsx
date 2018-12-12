@@ -1,4 +1,8 @@
-#load "../src/bristlecone.fsx"
+#r "../packages/NETStandard.Library.NETFramework/build/net461/lib/netstandard.dll"
+#r "../packages/FSharp.Data/lib/net45/FSharp.Data.dll"
+#r "../lib/Microsoft.Research.Oslo.dll"
+#r "../packages/Bristlecone/lib/netstandard2.0/bristlecone.dll"
+#r "../packages/Bristlecone.Dendro/lib/netstandard2.0/bristlecone.Dendro.dll"
 
 ////////////////////////////////////////////////////
 /// Yamal Salix lanata Shrub - Nitrogen Interactions
