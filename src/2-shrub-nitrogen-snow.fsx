@@ -1,6 +1,6 @@
 #r "../packages/NETStandard.Library.NETFramework/build/net461/lib/netstandard.dll"
 #r "../packages/FSharp.Data/lib/net45/FSharp.Data.dll"
-#r "../lib/Microsoft.Research.Oslo.dll"
+#r "../packages/MathNet.Numerics/lib/net40/MathNet.Numerics.dll"
 #r "../packages/Bristlecone/lib/netstandard2.0/bristlecone.dll"
 #r "../packages/Bristlecone.Dendro/lib/netstandard2.0/bristlecone.Dendro.dll"
 #load "components/components.fsx"
@@ -26,12 +26,13 @@ type BristleconeResult = CsvProvider<Sample = "PlantCode (string), Hypothesis (i
 // ----------------------------
 
 module Options =
-    let resultsDirectory = "/Users/andrewmartin/Desktop/No N Limitation Models/"
+    let resultsDirectory = "/Users/andrewmartin/Desktop/Snow-temperature models/"
     let iterations = 10
     let chains = 3
     let engine =
         Bristlecone.mkContinuous 
         |> Bristlecone.withContinuousTime Integration.MathNet.integrate
+        |> Bristlecone.withOutput (Bristlecone.Logging.Console.logger())
         |> Bristlecone.withTunedMCMC [ Optimisation.MonteCarlo.TuneMethod.CovarianceWithScale 0.750, 500, 100000 ]
 
 
@@ -112,43 +113,43 @@ let hypotheses =
 
     // [A] Increased snow levels protect shrub biomass from storm and other damage.
     let snowProtection =
-        [ (fun p e -> ModelComponents.ProtectionEffect.none), [] ]
-          //(fun p e -> ModelComponents.ProtectionEffect.linearSnowProtection  (lookup e "bs" |> ModelComponents.Proxies.shrubHeightCm) (26. - (lookup e "d18O"))), [] ]
+        [ (fun p e -> ModelComponents.SnowProtection.none), [] ]
+          //(fun p e -> ModelComponents.SnowProtection.linearSnowProtection  (lookup e "bs" |> ModelComponents.Proxies.shrubHeightCm) (26. - (lookup e "d18O"))), [] ]
 
     // [B] Snow insulates soils, which increases the efficiency of N-mineralising microbes.
     let nitrogenReplenishment =
-        [ (fun p _ -> ModelComponents.NitrogenReplenishment.linear (p |> Pool.getEstimate "lambda")),
-            [ code "lambda", parameter PositiveOnly   1.000 10.000 ]
-        //   (fun p e -> ModelComponents.NitrogenReplenishment.temperatureDependent (p |> Pool.getEstimate "lambda") (p |> Pool.getEstimate "soilEa") (p |> Pool.getEstimate "insulation") (lookup e "Tsummer") (lookup e "Twinter")),
-        //    [ code "lambda",        parameter PositiveOnly   0.001 0.100
-        //      code "soilEa",        parameter PositiveOnly   0.001 0.100
-        //      code "insulation",    parameter PositiveOnly   0.001 0.100 ]
-          (fun p e -> ModelComponents.NitrogenReplenishment.temperatureDependentSnowInsulation (p |> Pool.getEstimate "lambda") (p |> Pool.getEstimate "soilEa") (p |> Pool.getEstimate "insulation") (26. - (lookup e "d18O")) (lookup e "Tsummer") (lookup e "Twinter")),
-            [ code "lambda",        parameter PositiveOnly   0.001 0.100
-              code "soilEa",        parameter PositiveOnly   0.001 0.100
-              code "insulation",    parameter PositiveOnly   0.001 0.100 ] ]
+        [ //(fun p _ -> ModelComponents.Temperature.NitrogenReplenishment.linear (p |> Pool.getEstimate "lambda")),
+          //  [ code "lambda",        parameter PositiveOnly   1.000 10.000 ]
+          (fun p e -> ModelComponents.Temperature.NitrogenReplenishment.temperatureDependent (p |> Pool.getEstimate "lambda") (p |> Pool.getEstimate "soilEa") (p |> Pool.getEstimate "insulation") (lookup e "Tsummer") (lookup e "Twinter")),
+            [ code "lambda",        parameter PositiveOnly   0.001 10.00
+              code "soilEa",        parameter PositiveOnly   0.001 10.00
+              code "insulation",    parameter PositiveOnly   0.001 1.000 ]
+          (fun p e -> ModelComponents.Temperature.NitrogenReplenishment.temperatureDependentSnowInsulation (p |> Pool.getEstimate "lambda") (p |> Pool.getEstimate "soilEa") (p |> Pool.getEstimate "insulation") (26. - (lookup e "d18O")) (lookup e "Tsummer") (lookup e "Twinter")),
+            [ code "lambda",        parameter PositiveOnly   0.001 10.00
+              code "soilEa",        parameter PositiveOnly   0.001 10.00
+              code "insulation",    parameter PositiveOnly   0.001 1.000 ] ]
 
     // [C] Net photosynthetic rate is temperature-dependent
     let temperature =
-        [ //(fun _ -> ModelComponents.TemperatureDependence.none), []
-          (fun p e -> ModelComponents.TemperatureDependence.arrhenius (p |> Pool.getEstimate "A") (p |> Pool.getEstimate "Ea") (lookup e "Tsummer")),
+        [ //(fun _ -> ModelComponents.Temperature.none), []
+          (fun p e -> ModelComponents.Temperature.arrhenius (p |> Pool.getEstimate "A") (p |> Pool.getEstimate "Ea") (lookup e "Tsummer")),
            [ code "A",              parameter PositiveOnly 1.00 2.00
              code "Ea",             parameter PositiveOnly 1.00 2.00  ] ]
 
     // H1. Growth is N-dependent, due to (a) uptake and (b) photosynthetic constraints.
     let limitationModes =
-        [ (fun p -> ModelComponents.GrowthLimitation.hollingDiscModel (p |> Pool.getEstimate "a") (p |> Pool.getEstimate "h")),
-          [ code "a",      parameter PositiveOnly   0.500 1.500
-            code "h",      parameter PositiveOnly   0.100 3.000 ] ]
-          //(fun p -> ModelComponents.GrowthLimitation.linear (p |> Pool.getEstimate "a")), 
-          //[ code "a",      parameter PositiveOnly   1.000 1.05 ]
+        [ //(fun p -> ModelComponents.GrowthLimitation.hollingDiscModel (p |> Pool.getEstimate "a") (p |> Pool.getEstimate "h")),
+          //[ code "a",      parameter PositiveOnly   0.500 1.500
+          //  code "h",      parameter PositiveOnly   0.100 3.000 ] ]
+          (fun p -> ModelComponents.GrowthLimitation.linear (p |> Pool.getEstimate "a")), 
+          [ code "a",      parameter PositiveOnly   1.000 1.05 ] ]
           //(fun _ -> ModelComponents.GrowthLimitation.none), [] ]
 
     // H2. There is a positive feedback of nitrogen to soils, as plant environmental losses increase.
     let feedbackModes =
-        [ //(fun _ -> FeedbackToSoil.none), []
-          (fun p -> ModelComponents.FeedbackToSoil.withBiomassLoss (p |> Pool.getEstimate "alpha") (p |> Pool.getEstimate "gamma[b]") ),
-          [ code "alpha",  parameter PositiveOnly   0.0001 0.0002 ] ]
+        [ (fun _ -> ModelComponents.FeedbackToSoil.none), [] ]
+          //(fun p -> ModelComponents.FeedbackToSoil.withBiomassLoss (p |> Pool.getEstimate "alpha") (p |> Pool.getEstimate "gamma[b]") ),
+          //[ code "alpha",  parameter PositiveOnly   0.0001 0.0002 ] ]
 
     // H3. The maximum size of a shrub is constrained by geometry.
     let geometricModes = 
@@ -181,9 +182,9 @@ let winterTemperature =
 
 // b) Load shrub individual data + environment
 let shrubs = 
-    let yuribei = DataAccess.Shrub.loadRingWidths (__SOURCE_DIRECTORY__ + "/data/yuribei-rw.csv")
-    let d15N = DataAccess.Shrub.loadLocalEnvironmentVariable (__SOURCE_DIRECTORY__ + "/data/yuribei-d15N-imputed.csv")
-    let d18O = DataAccess.Shrub.loadLocalEnvironmentVariable (__SOURCE_DIRECTORY__ + "/data/yuribei-d18O-imputed.csv")
+    let yuribei = Data.PlantIndividual.loadRingWidths (__SOURCE_DIRECTORY__ + "/../data/yuribei-rw.csv")
+    let d15N = Data.PlantIndividual.loadLocalEnvironmentVariable (__SOURCE_DIRECTORY__ + "/../data/yuribei-d15N-imputed.csv")
+    let d18O = Data.PlantIndividual.loadLocalEnvironmentVariable (__SOURCE_DIRECTORY__ + "/../data/yuribei-d18O-imputed.csv")
     yuribei
     |> Seq.map (fun s -> s.Identifier.Value, s)
     |> Seq.keyMatch d15N
@@ -298,7 +299,8 @@ let workPackages shrubs (hypotheses:ModelSystem list) engine saveDirectory =
 
 (shrubs |> List.map (fun s -> printfn "%s" s.Identifier.Value))
 
-workPackages shrubs hypotheses Options.engine Options.resultsDirectory
-|> Seq.chunkBySize 2
-|> Seq.toArray
-|> Array.map (fun f -> f |> Array.Parallel.map(fun g -> g()))
+let run() =
+    workPackages shrubs hypotheses Options.engine Options.resultsDirectory
+    |> Seq.chunkBySize 2
+    |> Seq.toArray
+    |> Array.map (fun f -> f |> Array.Parallel.map(fun g -> g()))

@@ -95,8 +95,8 @@ module Allometrics =
 module GrowthLimitation =
 
     /// A rearranged version of a Monod model
-    let hollingDiscModel a h =
-        Some <| fun r -> (a * r) / (1. + (a * h * r))
+    let hollingDiscModel a b h =
+        Some <| fun r -> (a * r) / (1. + (a * b * h * r))
 
     /// TEST: An integrated supply and use model
     let saturatingSupplySaturatingGrowth r a b h rootMass =

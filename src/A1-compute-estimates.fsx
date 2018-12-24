@@ -4,10 +4,6 @@ open Bristlecone
 open FSharp.Data
 open ``1-shrub-nitrogen``
 
-/////////////////////////////
-/// PLOTTING BELOW
-/// //////////////////////////
-
 // A. Load in pre-computed results
 // ________________________________
 
@@ -31,19 +27,18 @@ let fit s h =
     let common = shrub |> PlantIndividual.keepCommonYears
     let startDate = common.Environment.[ShortCode.create "N"] |> TimeSeries.start
     let startConditions = getStartValues startDate shrub
-    let e = Bristlecone.mkContinuous |> Bristlecone.withContinuousTime Integration.MathNet.integrate |> Bristlecone.withConditioning (Custom startConditions)
-    common |> Bristlecone.PlantIndividual.fit e 1 h
+    let e = Bristlecone.mkContinuous |> Bristlecone.withContinuousTime Integration.MathNet.integrate |> Bristlecone.withTunedMCMC [] |> Bristlecone.withConditioning (Custom startConditions)
+    common |> Bristlecone.PlantIndividual.fit e 0 h
 
 let fitData =
     data
-    |> Array.rev
     |> Array.choose(fun fileName ->
         let data = BristleconeResult.Load fileName
         let headRow = data.Rows |> Seq.head
-        let hypothesisNumber = hypothesisNumberFromFilename fileName
+        let hypothesisNumber = headRow.Hypothesis//hypothesisNumberFromFilename fileName
         let realShrub = shrubs |> List.find (fun s -> s.Identifier.Value = headRow.PlantCode)
         let hypothesis =  { hypotheses.[hypothesisNumber-1] with Parameters = bestParameterPool data}
-        printfn "Hypothesis = %A" hypothesis
+        printfn "Hypothesis (%s) %i" headRow.PlantCode hypothesisNumber
         try
             let a = fit realShrub hypothesis
             (headRow.PlantCode, hypothesisNumber, a) |> Some

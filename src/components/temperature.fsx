@@ -1,16 +1,14 @@
-module ModelComponents
+module ModelComponents.Temperature
 
-module TemperatureDependence =
+// NB The parameter A is our parameter 'r' or 'Q', hence its absence from the below equations.
+let none _ = 1.
+let linear a t = a * t
 
-    // NB The parameter A is our parameter 'r' or 'Q', hence its absence from the below equations.
-    let none _ = 1.
-    let linear a t = a * t
-
-    /// Activation energy is in KJ rather than J
-    let arrhenius a ea t = a * System.Math.E ** (- ((ea * 1000.) / (8.314 * t)))
+/// Activation energy is in KJ rather than J
+let arrhenius a ea t = a * System.Math.E ** (- ((ea * 1000.) / (8.314 * t)))
 
 
-module SoilTemperature =
+module Soil =
 
     // Soil temperature is a function of a flux between summer and winter mean temperatures.
     // The flux is moderated by a snow regulation factor. 
@@ -31,11 +29,11 @@ module NitrogenReplenishment =
 
     let temperatureDependent a ea conductivity summerTemp winterTemp =
         conductivity
-        |> SoilTemperature.localHeatFlux summerTemp winterTemp // NB are these the right way around?
-        |> TemperatureDependence.arrhenius a ea
+        |> Soil.localHeatFlux summerTemp winterTemp // NB are these the right way around?
+        |> arrhenius a ea
 
     let temperatureDependentSnowInsulation a ea insulationFactor snowMass summerTemp winterTemp = 
         snowMass 
-        |> SoilTemperature.snowMassEffect insulationFactor
+        |> Soil.snowMassEffect insulationFactor
         |> fun con -> temperatureDependent a ea con summerTemp winterTemp
 

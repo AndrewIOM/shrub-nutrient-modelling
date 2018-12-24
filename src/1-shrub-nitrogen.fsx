@@ -1,9 +1,8 @@
 #r "../packages/NETStandard.Library.NETFramework/build/net461/lib/netstandard.dll"
-#r "../packages/FSharp.Data/lib/net45/FSharp.Data.dll"
-#r "../lib/Microsoft.Research.Oslo.dll"
-#r "../packages/Bristlecone/lib/netstandard2.0/bristlecone.dll"
-#r "../packages/Bristlecone.Dendro/lib/netstandard2.0/bristlecone.Dendro.dll"
+#load "../packages/Bristlecone/bristlecone.fsx"
+#load "../packages/Bristlecone/charts.fsx"
 #load "components/components.fsx"
+#r "../packages/Bristlecone.Dendro/lib/netstandard2.0/bristlecone.Dendro.dll"
 
 ////////////////////////////////////////////////////
 /// Yuribei `Salix lanata` Shrub - Nitrogen Interactions
@@ -24,14 +23,21 @@ type BristleconeResult = CsvProvider<Sample = "PlantCode (string), Hypothesis (i
 // ----------------------------
 
 module Options =
-    let resultsDirectory = "/Volumes/Macbook Time Machine/Shrub Results 250k/paper1-no-n-limitation-models/"
-    let iterations = 10
-    let chains = 3
+    let resultsDirectory = "/Users/andrewmartin/Desktop/"
+    let iterations = 100000
+    let chains = 6
+    let logger = 
+        let consolePost = Bristlecone.Logging.Console.logger()
+        let graphLog = Bristlecone.Logging.RealTimeTrace.TraceGraph(Logging.Device.X11,30.,5000)
+        (fun event -> consolePost event; graphLog.Log event)
+
     let engine =
         Bristlecone.mkContinuous 
         |> Bristlecone.withContinuousTime Integration.MathNet.integrate
-        |> Bristlecone.withTunedMCMC [ Optimisation.MonteCarlo.TuneMethod.Scale, 2000, 10000
+        |> Bristlecone.withOutput logger
+        |> Bristlecone.withTunedMCMC [ //Optimisation.MonteCarlo.TuneMethod.Scale, 2000, 10000
                                        Optimisation.MonteCarlo.TuneMethod.CovarianceWithScale 0.250, 500, 100000 ]
+
 
 // 2. Create Hypotheses
 // ----------------------------
@@ -113,27 +119,27 @@ let hypotheses =
 
     // [A] N may limited growth via combined N-limitations on (a) photosynthetic and (b) uptake rates
     let limitationModes =
-        [ (fun p -> ModelComponents.GrowthLimitation.hollingDiscModel (p |> Pool.getEstimate "a") (p |> Pool.getEstimate "h")),
+        [ (fun p -> ModelComponents.GrowthLimitation.hollingDiscModel (p |> Pool.getEstimate "a") (p |> Pool.getEstimate "r") (p |> Pool.getEstimate "h")),
            [ code "a",      parameter PositiveOnly   0.001 0.010          // N-uptake efficiency
-             code "h",      parameter PositiveOnly   0.001 0.010
+             code "h",      parameter PositiveOnly   0.001 4.000
              code "r",      parameter PositiveOnly   100.0 500.0 ]      // N-handling time (including uptake and incorporation)
           (fun p -> ModelComponents.GrowthLimitation.linear (p |> Pool.getEstimate "a")), 
            [ code "a",      parameter PositiveOnly   0.001 0.010
              code "r",      parameter PositiveOnly   100.0 500.0 ]        // N-uptake efficiency
           (fun _ -> ModelComponents.GrowthLimitation.none), 
-          [ code "r",         parameter PositiveOnly   0.001 1.000 ] ]
+          [ code "r",       parameter PositiveOnly   0.001 1.000 ] ]
 
     // [B] Loss of plant material may feedback into the soil pool of available nitrogen (instant)
     let feedbackModes =
         [ (fun _ -> ModelComponents.FeedbackToSoil.none), []
           (fun p -> ModelComponents.FeedbackToSoil.withBiomassLoss (p |> Pool.getEstimate "alpha") (p |> Pool.getEstimate "gamma[b]") ),
-          [ ShortCode.create "alpha",  Parameter.create PositiveOnly   0.0001 0.0010 ] ]    // N-recycling efficiency
+          [ code "alpha",  parameter PositiveOnly   0.0001 0.0010 ] ]    // N-recycling efficiency
 
     // [C] A plant may be subject to mechanical constraints on its maximum size
     let geometricModes = 
         [  (fun p -> ModelComponents.GeometricConstraint.none), []
            (fun p -> ModelComponents.GeometricConstraint.chapmanRichards (p |> Pool.getEstimate "k")),
-           [ ShortCode.create "k",  Parameter.create PositiveOnly   3000.00 5000.00 ] ]     // Asymptotic biomass (grams)
+           [ code "k",  parameter PositiveOnly   3000.00 5000.00 ] ]     // Asymptotic biomass (grams)
 
     List.combine3 geometricModes limitationModes feedbackModes
     |> List.map (fun ((growth,gp),(limit,lp),(feedback,fp)) -> 
@@ -144,8 +150,8 @@ let hypotheses =
 // ----------------------------
 
 let shrubs = 
-    let yuribei = DataAccess.Shrub.loadRingWidths (__SOURCE_DIRECTORY__ + "/../data/yuribei-rw.csv")
-    let d15N = DataAccess.Shrub.loadLocalEnvironmentVariable (__SOURCE_DIRECTORY__ + "/../data/yuribei-d15N-imputed.csv")
+    let yuribei = Data.PlantIndividual.loadRingWidths (__SOURCE_DIRECTORY__ + "/../data/yuribei-rw.csv")
+    let d15N = Data.PlantIndividual.loadLocalEnvironmentVariable (__SOURCE_DIRECTORY__ + "/../data/yuribei-d15N-imputed.csv")
     yuribei
     |> Seq.map (fun s -> s.Identifier.Value, s)
     |> Seq.keyMatch d15N
@@ -186,14 +192,16 @@ let workPackages shrubs (hypotheses:ModelSystem list) engine saveDirectory =
                             |> List.toArray
                             |> Array.map(fun h ->
                                 [| 1 .. Options.chains |]
-                                |> Array.Parallel.map(fun _ ->
+                                |> Array.Parallel.mapi(fun i _ ->
                                     [s] |> List.map (fun s ->
                                         let shrub = s |> PlantIndividual.toCumulativeGrowth
                                         let common = shrub |> PlantIndividual.keepCommonYears
                                         let startDate = common.Environment.[ShortCode.create "N"] |> TimeSeries.start
                                         let startConditions = getStartValues startDate shrub
                                         try 
-                                            let e = engine |> Bristlecone.withConditioning (Custom startConditions)
+                                            let e = 
+                                                engine 
+                                                |> Bristlecone.withConditioning (Custom startConditions)         
                                             let result = common |> Bristlecone.PlantIndividual.fit e Options.iterations h
                                             printfn "Result %A" result
                                             Some (s.Identifier, h, result)
@@ -247,7 +255,8 @@ let workPackages shrubs (hypotheses:ModelSystem list) engine saveDirectory =
 
 (shrubs |> List.map (fun s -> printfn "%s" s.Identifier.Value))
 
-workPackages (shrubs |> List.skip 1) hypotheses Options.engine Options.resultsDirectory
-|> Seq.chunkBySize 3
-|> Seq.toArray
-|> Array.map (fun f -> f |> Array.Parallel.map(fun g -> g()))
+let run() =
+    workPackages (shrubs |> List.skip 1) hypotheses Options.engine Options.resultsDirectory
+    |> Seq.chunkBySize 1
+    |> Seq.toArray
+    |> Array.map (fun f -> f |> Array.Parallel.map(fun g -> g()))
