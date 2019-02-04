@@ -83,7 +83,7 @@ module Allometrics =
         let findRadius volume =
             let v x = x |> NiklasAndSpatz_Allometry.stemLength k5 k6 |> shrubVolume b a rtip p lmin k5 k6 n |> snd
             let f = (fun x -> (v x) - volume )
-            Optimisation.RootFinding.bisect 0 200 f 0.01 1000.00 1e-8 // Assumption that shrub radius is between 0.01 and 100.0cm.
+            Statistics.RootFinding.bisect 0 200 f 0.01 1000.00 1e-8 // Assumption that shrub radius is between 0.01 and 100.0cm.
         mass
         |> massToVolume woodDensity
         |> findRadius

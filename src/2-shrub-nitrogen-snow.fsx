@@ -1,8 +1,8 @@
 #r "../packages/NETStandard.Library.NETFramework/build/net461/lib/netstandard.dll"
-#r "../packages/FSharp.Data/lib/net45/FSharp.Data.dll"
-#r "../packages/MathNet.Numerics/lib/net40/MathNet.Numerics.dll"
-#r "../packages/Bristlecone/lib/netstandard2.0/bristlecone.dll"
+#load "../packages/Bristlecone/bristlecone.fsx"
+#load "../packages/Bristlecone/charts.fsx"
 #r "../packages/Bristlecone.Dendro/lib/netstandard2.0/bristlecone.Dendro.dll"
+
 #load "components/components.fsx"
 #load "components/temperature.fsx"
 #load "components/snow.fsx"
@@ -17,23 +17,23 @@
 open Bristlecone
 open Bristlecone.ModelSystem
 open Bristlecone.PlantIndividual
-open FSharp.Data
-
-type BristleconeResult = CsvProvider<Sample = "PlantCode (string), Hypothesis (int), Iteration (int), Chain (int), Parameter (string), Likelihood (float), value (float)", CacheRows = true>
-
+open Bristlecone.Workflow.Orchestration
 
 // 1. Configure Options
 // ----------------------------
 
 module Options =
-    let resultsDirectory = "/Users/andrewmartin/Desktop/Snow-temperature models/"
-    let iterations = 10
-    let chains = 3
+    let resultsDirectory = "/Users/andrewmartin/Desktop/SnowTest/"
+    let chains = 4
+    let endWhen = Optimisation.MonteCarlo.SimulatedAnnealing.EndConditions.stoppedImproving 5
+    let logger = Logging.RealTimeTrace.graphWithConsole 30. 10000
+    let annealOptions = { Optimisation.MonteCarlo.SimulatedAnnealing.AnnealSettings.Default with AnnealStepLength = Optimisation.MonteCarlo.SimulatedAnnealing.EndConditions.improvementCount 250 }
     let engine =
         Bristlecone.mkContinuous 
         |> Bristlecone.withContinuousTime Integration.MathNet.integrate
-        |> Bristlecone.withOutput (Bristlecone.Logging.Console.logger())
-        |> Bristlecone.withTunedMCMC [ Optimisation.MonteCarlo.TuneMethod.CovarianceWithScale 0.750, 500, 100000 ]
+        |> Bristlecone.withOutput logger
+        |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.SimulatedAnnealing.fastSimulatedAnnealing 0.001 annealOptions)
+    let orchestrator = OrchestrationAgent(logger, 4)//System.Environment.ProcessorCount)
 
 
 // 2. Create Hypotheses
@@ -54,14 +54,10 @@ module BaseEquations =
 
 let ``base model`` maxGrowthRate nLimitation nitrogenFeedback nReplenishment protectionEffect temperatureDependency additionalParameters =
 
-    let randomLog environment parameters =
-        if System.Random().Next(0,50000) = 1 then
-            printfn "RANDOM LOG: Environment = %A; Parameters = %A" environment parameters
-
     /// Cumulative stem biomass [b].
     let dbsdt' (b:float) n gammab r maxGrowthRate limit protectionEffect tempEffect =
         match limit with
-        | Some l -> BaseEquations.biomass b n r gammab maxGrowthRate l protectionEffect tempEffect
+        | Some l -> BaseEquations.biomass b n (r * 1000.) gammab maxGrowthRate l protectionEffect tempEffect
         | None -> BaseEquations.biomass b n r gammab maxGrowthRate (fun _ -> 1.) protectionEffect tempEffect
 
     /// Bioavailable soil nitrogen [N]
@@ -70,19 +66,8 @@ let ``base model`` maxGrowthRate nLimitation nitrogenFeedback nReplenishment pro
         | Some l -> BaseEquations.soilNitrogen n bs gamman nReplenishment maxGrowthRate l feedback tempEffect
         | None -> BaseEquations.soilNitrogenNoUptake n bs gamman nReplenishment feedback
 
-    /// Measurement variable: stem radius [rw].
-    let drwdt' bs n r gammab maxGrowthRate limit protectionEffect tempEffect =
-        let biomassStemChange = dbsdt' bs n gammab r maxGrowthRate limit protectionEffect tempEffect
-        if biomassStemChange > 0.
-            then
-                let oldRadius = bs |> ModelComponents.Proxies.toRadiusMM
-                let newRadius = (bs + biomassStemChange) |> ModelComponents.Proxies.toRadiusMM
-                newRadius - oldRadius
-            else 0.
-
     /// Bristlecone function for dBs/dt
     let dbsdt p _ bs (e:Environment) =
-        randomLog e p
         dbsdt' bs ((lookup e "N") |> ModelComponents.Proxies.d15NtoAvailability)
             (p |> Pool.getEstimate "gamma[b]") (p |> Pool.getEstimate "r") (maxGrowthRate p) (nLimitation p) (protectionEffect p e) (temperatureDependency p e)
 
@@ -91,17 +76,18 @@ let ``base model`` maxGrowthRate nLimitation nitrogenFeedback nReplenishment pro
         dndt' (lookup e "bs") (n |> ModelComponents.Proxies.d15NtoAvailability) 
             (p |> Pool.getEstimate "gamma[n]") (maxGrowthRate p) (nitrogenFeedback p) (nLimitation p) (nReplenishment p e) (temperatureDependency p e)
 
-    /// Bristlecone function for dr/dt
-    let drwdt p _ _ (e:Environment) =
-        drwdt' (lookup e "bs") ((lookup e "N") |> ModelComponents.Proxies.d15NtoAvailability) 
-            (p |> Pool.getEstimate "r") (p |> Pool.getEstimate "gamma[b]") (maxGrowthRate p) (nLimitation p) (protectionEffect p e) (temperatureDependency p e)
+    let stemRadius lastRadius lastEnv env =
+        let oldCumulativeMass = lookup lastEnv "bs"
+        let newCumulativeMass = lookup env "bs"
+        if (newCumulativeMass - oldCumulativeMass) > 0.
+        then newCumulativeMass |> ModelComponents.Proxies.toRadiusMM
+        else 0.
 
-    { Equations  = [ code "x",         drwdt
-                     code "bs",        dbsdt
+    { Equations  = [ code "bs",        dbsdt
                      code "N",         dndt ] |> Map.ofList
-      Parameters = [ code "gamma[n]",  parameter PositiveOnly   0.001 0.100   // Loss rate of nitrogen
-                     code "gamma[b]",  parameter PositiveOnly   0.001 0.010   // Loss rate of biomass
-                     code "r",         parameter PositiveOnly   0.010 0.100   // Photosynthetic efficiency (either N-limited or N-unlimited)
+      Measures   = [ code "x",         stemRadius ] |> Map.ofList
+      Parameters = [ code "gamma[n]",  parameter PositiveOnly   0.001 0.200   // Loss rate of nitrogen
+                     code "gamma[b]",  parameter PositiveOnly   0.001 0.200   // Loss rate of biomass
                      code "rho",       parameter Unconstrained  -0.50 0.500   // Covariance between growth and nitrogen
                      code "sigma[x]",  parameter PositiveOnly   0.100 1.200   // Standard deviation of x (biomass)
                      code "sigma[y]",  parameter PositiveOnly   0.250 0.750   // Standard deviation of y (nitrogen)
@@ -118,8 +104,8 @@ let hypotheses =
 
     // [B] Snow insulates soils, which increases the efficiency of N-mineralising microbes.
     let nitrogenReplenishment =
-        [ //(fun p _ -> ModelComponents.Temperature.NitrogenReplenishment.linear (p |> Pool.getEstimate "lambda")),
-          //  [ code "lambda",        parameter PositiveOnly   1.000 10.000 ]
+        [ (fun p _ -> ModelComponents.Temperature.NitrogenReplenishment.linear (p |> Pool.getEstimate "lambda")),
+            [ code "lambda",        parameter PositiveOnly   1.000 10.000 ]
           (fun p e -> ModelComponents.Temperature.NitrogenReplenishment.temperatureDependent (p |> Pool.getEstimate "lambda") (p |> Pool.getEstimate "soilEa") (p |> Pool.getEstimate "insulation") (lookup e "Tsummer") (lookup e "Twinter")),
             [ code "lambda",        parameter PositiveOnly   0.001 10.00
               code "soilEa",        parameter PositiveOnly   0.001 10.00
@@ -138,24 +124,27 @@ let hypotheses =
 
     // H1. Growth is N-dependent, due to (a) uptake and (b) photosynthetic constraints.
     let limitationModes =
-        [ //(fun p -> ModelComponents.GrowthLimitation.hollingDiscModel (p |> Pool.getEstimate "a") (p |> Pool.getEstimate "h")),
-          //[ code "a",      parameter PositiveOnly   0.500 1.500
-          //  code "h",      parameter PositiveOnly   0.100 3.000 ] ]
-          (fun p -> ModelComponents.GrowthLimitation.linear (p |> Pool.getEstimate "a")), 
-          [ code "a",      parameter PositiveOnly   1.000 1.05 ] ]
-          //(fun _ -> ModelComponents.GrowthLimitation.none), [] ]
+        [ (fun p -> ModelComponents.GrowthLimitation.hollingDiscModel ((p |> Pool.getEstimate "a") / 1000.) ((p |> Pool.getEstimate "r") * 1000.) (p |> Pool.getEstimate "h")),
+           [ code "a",      parameter PositiveOnly   0.100 4.000          // N-uptake efficiency
+             code "h",      parameter PositiveOnly   0.100 4.000
+             code "r",      parameter PositiveOnly   0.100 0.500 ] ]     // N-handling time (including uptake and incorporation)
+          //(fun p -> ModelComponents.GrowthLimitation.linear ((p |> Pool.getEstimate "a") / 1000.)), 
+          // [ code "a",      parameter PositiveOnly   0.001 0.010
+          //   code "r",      parameter PositiveOnly   0.100 1.000 ]        // N-uptake efficiency
+          //(fun _ -> ModelComponents.GrowthLimitation.none), 
+          //[ code "r",       parameter PositiveOnly   0.500 1.000 ] ]
 
     // H2. There is a positive feedback of nitrogen to soils, as plant environmental losses increase.
     let feedbackModes =
-        [ (fun _ -> ModelComponents.FeedbackToSoil.none), [] ]
-          //(fun p -> ModelComponents.FeedbackToSoil.withBiomassLoss (p |> Pool.getEstimate "alpha") (p |> Pool.getEstimate "gamma[b]") ),
-          //[ code "alpha",  parameter PositiveOnly   0.0001 0.0002 ] ]
+        [ (fun _ -> ModelComponents.FeedbackToSoil.none), []
+          (fun p -> ModelComponents.FeedbackToSoil.withBiomassLoss ((p |> Pool.getEstimate "alpha") / 100.) (p |> Pool.getEstimate "gamma[b]") ),
+          [ code "alpha",  parameter PositiveOnly   0.01 1.00 ] ]    // N-recycling efficiency
 
     // H3. The maximum size of a shrub is constrained by geometry.
     let geometricModes = 
-        [ (fun p -> ModelComponents.GeometricConstraint.none), [] ]
-          //(fun p -> GeometricConstraint.chapmanRichards (p |> Pool.getEstimate "k")),
-          // [ code "k",  parameter PositiveOnly   3000.00 5000.00 ] ]
+        [  (fun p -> ModelComponents.GeometricConstraint.none), []
+           (fun p -> ModelComponents.GeometricConstraint.chapmanRichards ((p |> Pool.getEstimate "k") * 1000.)),
+           [ code "k",  parameter PositiveOnly   3.00 5.00 ] ]     // Asymptotic biomass (grams)
 
     // Create all combinations of H1-H5 
     List.combine6 geometricModes limitationModes feedbackModes nitrogenReplenishment snowProtection temperature
@@ -166,8 +155,10 @@ let hypotheses =
 // 3. Load Real Data and Estimate
 // ----------------------------
 
-type Climate = CsvProvider<"../data/yamal-temperature-mean-quarters.csv">
-let regionalClimate = Climate.Load("../data/yamal-temperature-mean-quarters.csv")
+open FSharp.Data
+
+type Climate = CsvProvider<"../../data/yamal-temperature-mean-quarters.csv">
+let regionalClimate = Climate.Load("../../data/yamal-temperature-mean-quarters.csv")
 let summerTemperature = 
     let convert (x:decimal<_>) = decimal x
     regionalClimate.Rows
@@ -227,80 +218,29 @@ let everyNth n seq =
         |> Seq.map fst                               // Drop index from the result
 
 
-let workPackages shrubs (hypotheses:ModelSystem list) engine saveDirectory =
+let workPackages shrubs hypotheses engine saveDirectory =
     seq {
         for s in shrubs do
-            for hi in [ 1.. hypotheses.Length ] do
-                    let estimate() =
-                        printfn "Starting estimate for shrub %s (H%i)" s.Identifier.Value hi
-                        let estimates =
-                            [hypotheses.[hi-1]]
-                            |> List.toArray
-                            |> Array.map(fun h ->
-                                [| 1 .. Options.chains |]
-                                |> Array.Parallel.map(fun _ ->
-                                    [s] |> List.map (fun s ->
-                                        let shrub = s |> PlantIndividual.toCumulativeGrowth
-                                        let common = shrub |> PlantIndividual.keepCommonYears
-                                        let startDate = common.Environment.[ShortCode.create "N"] |> TimeSeries.start
-                                        let startConditions = getStartValues startDate shrub
-                                        try 
-                                            let e = engine |> Bristlecone.withConditioning (Custom startConditions)
-                                            let result = common |> Bristlecone.PlantIndividual.fit e Options.iterations h
-                                            printfn "Result %A" result
-                                            Some (s.Identifier, h, result)
-                                        with
-                                        | e ->
-                                            printfn "A chain failed with expection: %A" e
-                                            None
-                                    )))
-                        printfn "Done with estimates for %s. Saving..." s.Identifier.Value
 
-                        // PlantCode, Hypothesis, Iteration, Chain, Parameter, Likelihood
-                        let chainsDataFrame =
-                            estimates
-                            |> Array.map (fun hypothesis -> 
-                                hypothesis
-                                |> Array.mapi (fun chainNumber chain ->
-                                    chain
-                                    |> List.choose id
-                                    |> List.map (fun (plantCode,model,result) ->
-                                        result.Trace
-                                        |> List.rev
-                                        |> Seq.mapi (fun iterationNumber (likelihood,values) ->
-                                            result.Parameters
-                                            |> Map.toList
-                                            |> List.mapi(fun i (name,p) -> 
-                                                plantCode.Value,
-                                                hi,
-                                                iterationNumber + 1,
-                                                chainNumber + 1,
-                                                name.Value,
-                                                likelihood,
-                                                values.[i] )
-                                        )
-                                        |> everyNth 5 // Thinning by this amount
-                                        |> List.concat
-                                        |> Seq.toList
-                                    )
-                                    |> List.concat )
-                                |> Array.toList
-                                |> List.concat )
-                            |> Array.toList
-                            |> List.concat
+            // 1. Arrange the subject and settings
+            let shrub = s |> PlantIndividual.toCumulativeGrowth
+            let common = shrub |> PlantIndividual.keepCommonYears
+            let startDate = common.Environment.[ShortCode.create "N"] |> TimeSeries.start
+            let startConditions = getStartValues startDate shrub
+            let e = engine |> Bristlecone.withConditioning (Custom startConditions)
+            
+            // 2. Setup batches of dependent analyses
+            for h in [ 1 .. hypotheses |> List.length ] do
+                for i in [ 1 .. Options.chains ] do
+                    let jobId = System.Guid.NewGuid()
+                    yield async {
+                            // A. Compute result
+                            let result = Bristlecone.PlantIndividual.fit e Options.endWhen hypotheses.[h-1] common
+                            // B. Save to file
+                            Bristlecone.Data.Cache.saveTrace saveDirectory s.Identifier.Value h jobId [ result ]
+                            return result }
+    }
 
-                        // Save as CSV file
-                        let buildRowFromObject = fun (a,b,c,d,e,f,g) -> BristleconeResult.Row(a,b,c,d,e,f,g)
-                        let buildTableFromObjects = (Seq.map buildRowFromObject) >> Seq.toList >> BristleconeResult
-                        let myCsv = chainsDataFrame |> buildTableFromObjects
-                        myCsv.Save(sprintf "%sdphil-shrub-output-%s-H%i.csv" saveDirectory s.Identifier.Value hi)
-                    yield estimate
-            }
-
-(shrubs |> List.map (fun s -> printfn "%s" s.Identifier.Value))
-
-let run() =
-    workPackages shrubs hypotheses Options.engine Options.resultsDirectory
-    |> Seq.chunkBySize 2
-    |> Seq.toArray
-    |> Array.map (fun f -> f |> Array.Parallel.map(fun g -> g()))
+// Orchestrate the analyses
+let work = workPackages shrubs hypotheses Options.engine Options.resultsDirectory
+work |> Seq.iter (OrchestrationMessage.StartWorkPackage >> Options.orchestrator.Post)
