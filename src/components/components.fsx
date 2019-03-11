@@ -1,6 +1,6 @@
 module ModelComponents
 
-#r "../../packages/Bristlecone/lib/netstandard2.0/bristlecone.dll"
+#r "../../packages/Bristlecone/lib/netstandard2.0/Bristlecone.dll"
 #load "constants.fsx"
 
 open Bristlecone
@@ -19,13 +19,15 @@ module NiklasAndSpatz_Allometry =
         f (A / double n)
 
     /// Gives the basal radius in centimeters of a stem/branch given its length in centimeters. Function from Niklas and Spatz (2004). 
+    /// The basal radius is always positive.
     let basalRadius k5 k6 stemLength =
-        100. * (( 0.01 * stemLength + k6) / k5) ** (3. / 2.) / 2.
+        max (100. * (( 0.01 * stemLength + k6) / k5) ** (3. / 2.) / 2.) 1e-06
 
     /// Inverse equation of basalRadius, rearranged using Wolfram Alpha
     /// http://www.wolframalpha.com/input/?i=solve+r+%3D+100*((0.01*h%2Bk_6)%2Fk_5)%5E(3%2F2)%2F2+for+h
+    /// The stem length is always positive.
     let stemLength k5 k6 radius =
-        2. * ((nthroot 3. 2.) * 5. ** (2./3.) * k5 * radius ** (2./3.) - 50. * k6)
+        max (2. * ((nthroot 3. 2.) * 5. ** (2./3.) * k5 * radius ** (2./3.) - 50. * k6)) 1e-06
 
 module Götmark2016_ShrubModel =
 
@@ -83,7 +85,7 @@ module Allometrics =
         let findRadius volume =
             let v x = x |> NiklasAndSpatz_Allometry.stemLength k5 k6 |> shrubVolume b a rtip p lmin k5 k6 n |> snd
             let f = (fun x -> (v x) - volume )
-            Optimisation.RootFinding.bisect 0 200 f 0.01 1000.00 1e-8 // Assumption that shrub radius is between 0.01 and 100.0cm.
+            Statistics.RootFinding.bisect 0 200 f 0.01 1000.00 1e-8 // Assumption that shrub radius is between 0.01 and 100.0cm.
         mass
         |> massToVolume woodDensity
         |> findRadius
@@ -97,6 +99,10 @@ module GrowthLimitation =
     /// A rearranged version of a Monod model
     let hollingDiscModel a b h =
         Some <| fun r -> (a * r) / (1. + (a * b * h * r))
+
+    /// A rearranged version of a Monod model
+    let lizzy a h =
+        Some <| fun r -> (a * r) / (1. + (a * h * r))
 
     /// TEST: An integrated supply and use model
     let saturatingSupplySaturatingGrowth r a b h rootMass =
