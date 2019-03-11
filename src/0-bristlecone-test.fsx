@@ -51,7 +51,8 @@ let settings = {
       HeatRamp = fun t -> t * 1.10
       BoilingAcceptanceRate = 0.85
       InitialTemperature = 1.00
-      AnnealStepLength = EndConditions.improvementCount 10000 }
+      AnnealStepLength = EndConditions.improvementCount 10000 100
+      TemperatureCeiling = Some 500. }
 
 let method =
       Bristlecone.mkContinuous

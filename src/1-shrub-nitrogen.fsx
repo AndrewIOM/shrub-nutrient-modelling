@@ -28,13 +28,12 @@ module Options =
         Bristlecone.mkContinuous 
         |> Bristlecone.withContinuousTime Integration.MathNet.integrate
         |> Bristlecone.withOutput logger
-        |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.Filzbach.filzbach 0.01 (Optimisation.EndConditions.afterIteration 200000))
-        // |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.SimulatedAnnealing.fastSimulatedAnnealing 0.0001 
-        //     { Optimisation.MonteCarlo.SimulatedAnnealing.AnnealSettings<float>.Default with 
-        //         BoilingAcceptanceRate = 0.60
-        //         HeatRamp = (fun t -> t + sqrt t); TemperatureCeiling = Some 500.
-        //         HeatStepLength = Optimisation.EndConditions.afterIteration 1000
-        //         AnnealStepLength = (fun x -> Optimisation.MonteCarlo.SimulatedAnnealing.EndConditions.improvementCount 5000 250 x || Optimisation.EndConditions.afterIteration 15000 x) }) //(Optimisation.EndConditions.afterIteration 10000) })
+        |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.SimulatedAnnealing.fastSimulatedAnnealing 0.0001 
+            { Optimisation.MonteCarlo.SimulatedAnnealing.AnnealSettings<float>.Default with 
+                BoilingAcceptanceRate = 0.60
+                HeatRamp = (fun t -> t + sqrt t); TemperatureCeiling = Some 500.
+                HeatStepLength = Optimisation.EndConditions.afterIteration 1000
+                AnnealStepLength = (fun x -> Optimisation.MonteCarlo.SimulatedAnnealing.EndConditions.improvementCount 5000 250 x || Optimisation.EndConditions.afterIteration 15000 x) }) //(Optimisation.EndConditions.afterIteration 10000) })
 
     let orchestrator = OrchestrationAgent(logger, System.Environment.ProcessorCount)
 
@@ -215,97 +214,97 @@ let workPackages shrubs hypotheses engine saveDirectory =
 let work = workPackages (shrubs |> Seq.skip 0) hypotheses Options.engine Options.resultsDirectory
 // work |> Seq.take 3 |> Seq.iter (OrchestrationMessage.StartWorkPackage >> Options.orchestrator.Post)
 
-// work 
-// |> Seq.toArray
-// |> Array.chunkBySize 1
-// |> Array.take 1
-// |> Array.map(fun p -> p |> Array.Parallel.map(fun w -> w |> Async.RunSynchronously))
+// // work 
+// // |> Seq.toArray
+// // |> Array.chunkBySize 1
+// // |> Array.take 1
+// // |> Array.map(fun p -> p |> Array.Parallel.map(fun w -> w |> Async.RunSynchronously))
 
-open RProvider
-open RProvider.graphics
+// open RProvider
+// open RProvider.graphics
 
-let pi = System.Math.PI
+// let pi = System.Math.PI
 
-/// Total shrub volume given height and number of stems
-let vol b a rtip p lmin k5 k6 n h =
+// /// Total shrub volume given height and number of stems
+// let vol b a rtip p lmin k5 k6 n h =
 
-    let radius = ModelComponents.NiklasAndSpatz_Allometry.basalRadius k5 k6
-    let mainStemVolume =
-        match radius h with
-        | r when r > rtip -> n * pi * h * ((radius h) ** 2. + (radius h) * rtip + rtip ** 2.) / 3.
-        | r -> n * pi * h * rtip ** 2.
+//     let radius = ModelComponents.NiklasAndSpatz_Allometry.basalRadius k5 k6
+//     let mainStemVolume =
+//         match radius h with
+//         | r when r > rtip -> n * pi * h * ((radius h) ** 2. + (radius h) * rtip + rtip ** 2.) / 3.
+//         | r -> n * pi * h * rtip ** 2.
 
-    let mutable volume = mainStemVolume
-    let mutable k = 0.
+//     let mutable volume = mainStemVolume
+//     let mutable k = 0.
 
-    while (p ** k * h > lmin * 2./3.) do
-        let volToAdd =
-            printfn "[1] - %f" (n * a * ((a + 1.) ** (float k)) * pi * 3. * p * ((p ** k) * h - 2. * lmin / 3.) * ((radius (3. * p * ((p ** k) * h - 2. * lmin / 3.))) * (radius (3. * p * ((p ** k) * h - 2. * lmin / 3.)) * rtip + (rtip ** 2.))) / 3.)
-            printfn "[2] - %f" (n * a * ((a + 1.) ** (float k)) * 3. * p * ((p ** k) * h - 2. * lmin / 3.) * pi * (rtip ** 2.))
-            printfn "[3] - %f" (n * a * ((a + 1.) ** (float k)) * pi * (p ** (k + 1.)) * h * (((radius ((p ** (k+1.)) * h)) ** 2.) + (radius ((p ** (k + 1.)) * h)) * rtip + (rtip ** 2.)) / 3.)
-            printfn "[4] - %f" (n * a * ((a + 1.) ** (float k)) * (p ** (k + 1.)) * h * pi * (rtip ** 2.))
+//     while (p ** k * h > lmin * 2./3.) do
+//         let volToAdd =
+//             printfn "[1] - %f" (n * a * ((a + 1.) ** (float k)) * pi * 3. * p * ((p ** k) * h - 2. * lmin / 3.) * ((radius (3. * p * ((p ** k) * h - 2. * lmin / 3.))) * (radius (3. * p * ((p ** k) * h - 2. * lmin / 3.)) * rtip + (rtip ** 2.))) / 3.)
+//             printfn "[2] - %f" (n * a * ((a + 1.) ** (float k)) * 3. * p * ((p ** k) * h - 2. * lmin / 3.) * pi * (rtip ** 2.))
+//             printfn "[3] - %f" (n * a * ((a + 1.) ** (float k)) * pi * (p ** (k + 1.)) * h * (((radius ((p ** (k+1.)) * h)) ** 2.) + (radius ((p ** (k + 1.)) * h)) * rtip + (rtip ** 2.)) / 3.)
+//             printfn "[4] - %f" (n * a * ((a + 1.) ** (float k)) * (p ** (k + 1.)) * h * pi * (rtip ** 2.))
             
-            // If the branch to add is less than min branch length (lmin),
-            // then scale the amount to add continuously so that the length
-            // of the child branch is 3*p*(p^k*h-2*l_min/3).
-            printfn "[%f] Branch length to add: %f" mainStemVolume (p ** k * h)
-            match (p ** k * h < lmin) with
-            | true ->
-                // Adding a branch with length less than l_min
-                // Add the volume of the child branches to every
-                // parent branch / stem.
-                printfn "[Test 1] - %f" ((b * 3. * p * (p ** k * h - 2. * lmin / 3.)))
-                match (b * 3. * p * (p ** k * h - 2. * lmin / 3.) > rtip) with
-                | true ->
-                    // Length of child branch is more than r_tip
-                    // Model child branch as a cone
-                    printfn "1 - Radius = %f" (radius h)
-                    n * a * (a + 1.) ** (float k) * pi * 3. * p * (p ** k * h - 2. * lmin / 3.) * ((radius (3. * p * (p ** k * h - 2. * lmin / 3.))) * (radius (3. * p * (p ** k * h - 2. * lmin / 3.)) * rtip + rtip ** 2.)) / 3.
-                | false ->
-                    // Length of child branch is less than r_tip
-                    // Model child branch as a cylinder
-                    printfn "2 - Radius = %f" (radius h)
-                    //V_s = V_s + n*a_s*(a_s+1)^k * 3*p*(p^k*h_s-2*l_min/3)*pi*r_tip^2;
-                    n * a * (a + 1.) ** (float k) * 3. * p * (p ** k * h - 2. * lmin / 3.) * pi * rtip ** 2.
-            | false ->
-                printfn "[Test 2] - %f" (radius (p ** (k + 1.) * h))
-                match (radius (p ** (k + 1.) * h) > rtip) with
-                | true ->
-                    printfn "Ratio = %f" (radius (p ** (k + 1.) * h))
-                    // b * branch length > r_tip (max radius of branch tip)
-                    // Model child branch as a truncated cone
-                    printfn "3 - Radius = %f" (radius h)
-                    // V_s=V_s + n*a_s*(a_s+1)^k*pi*p^(k+1)*h_s*((rad(p^(k+1)*h_s))^2+rad(p^(k+1)*h_s)*r_tip+r_tip^2)/3;
-                    printfn "Component1 = %f" (n * a * (a + 1.) ** (float k) * pi * p ** (k + 1.) * h)
-                    printfn "Component2 = %f" (((radius (p ** (k+1.) * h)) ** 2. + (radius (p ** (k + 1.) * h)) * rtip + rtip ** 2.))
-                    n * a * (a + 1.) ** (float k) * pi * p ** (k + 1.) * h * ((radius (p ** (k+1.) * h)) ** 2. + (radius (p ** (k + 1.) * h)) * rtip + rtip ** 2.) / 3.
-                | false ->
-                    // Model child branch as a cylinder
-                    printfn "4 - Radius = %f" (radius h)
-                    n * a * (a + 1.) ** (float k) * p ** (k + 1.) * h * pi * rtip ** 2.
-        printfn "Adding %f" volToAdd
-        volume <- volume + volToAdd
-        k <- k + 1.
+//             // If the branch to add is less than min branch length (lmin),
+//             // then scale the amount to add continuously so that the length
+//             // of the child branch is 3*p*(p^k*h-2*l_min/3).
+//             printfn "[%f] Branch length to add: %f" mainStemVolume (p ** k * h)
+//             match (p ** k * h < lmin) with
+//             | true ->
+//                 // Adding a branch with length less than l_min
+//                 // Add the volume of the child branches to every
+//                 // parent branch / stem.
+//                 printfn "[Test 1] - %f" ((b * 3. * p * (p ** k * h - 2. * lmin / 3.)))
+//                 match (b * 3. * p * (p ** k * h - 2. * lmin / 3.) > rtip) with
+//                 | true ->
+//                     // Length of child branch is more than r_tip
+//                     // Model child branch as a cone
+//                     printfn "1 - Radius = %f" (radius h)
+//                     n * a * (a + 1.) ** (float k) * pi * 3. * p * (p ** k * h - 2. * lmin / 3.) * ((radius (3. * p * (p ** k * h - 2. * lmin / 3.))) * (radius (3. * p * (p ** k * h - 2. * lmin / 3.)) * rtip + rtip ** 2.)) / 3.
+//                 | false ->
+//                     // Length of child branch is less than r_tip
+//                     // Model child branch as a cylinder
+//                     printfn "2 - Radius = %f" (radius h)
+//                     //V_s = V_s + n*a_s*(a_s+1)^k * 3*p*(p^k*h_s-2*l_min/3)*pi*r_tip^2;
+//                     n * a * (a + 1.) ** (float k) * 3. * p * (p ** k * h - 2. * lmin / 3.) * pi * rtip ** 2.
+//             | false ->
+//                 printfn "[Test 2] - %f" (radius (p ** (k + 1.) * h))
+//                 match (radius (p ** (k + 1.) * h) > rtip) with
+//                 | true ->
+//                     printfn "Ratio = %f" (radius (p ** (k + 1.) * h))
+//                     // b * branch length > r_tip (max radius of branch tip)
+//                     // Model child branch as a truncated cone
+//                     printfn "3 - Radius = %f" (radius h)
+//                     // V_s=V_s + n*a_s*(a_s+1)^k*pi*p^(k+1)*h_s*((rad(p^(k+1)*h_s))^2+rad(p^(k+1)*h_s)*r_tip+r_tip^2)/3;
+//                     printfn "Component1 = %f" (n * a * (a + 1.) ** (float k) * pi * p ** (k + 1.) * h)
+//                     printfn "Component2 = %f" (((radius (p ** (k+1.) * h)) ** 2. + (radius (p ** (k + 1.) * h)) * rtip + rtip ** 2.))
+//                     n * a * (a + 1.) ** (float k) * pi * p ** (k + 1.) * h * ((radius (p ** (k+1.) * h)) ** 2. + (radius (p ** (k + 1.) * h)) * rtip + rtip ** 2.) / 3.
+//                 | false ->
+//                     // Model child branch as a cylinder
+//                     printfn "4 - Radius = %f" (radius h)
+//                     n * a * (a + 1.) ** (float k) * p ** (k + 1.) * h * pi * rtip ** 2.
+//         printfn "Adding %f" volToAdd
+//         volume <- volume + volToAdd
+//         k <- k + 1.
 
-    k, volume
+//     k, volume
  
-let radius = [ 1. .. 1. .. 100. ] // in mm
-let height = radius |> List.map (fun r -> ModelComponents.Allometrics.shrubHeight Constants.Allometrics.k5 Constants.Allometrics.k6 (r / 10.))
-let volume = height |> List.map (fun r -> vol Constants.Allometrics.b Constants.Allometrics.a Constants.Allometrics.rtip Constants.Allometrics.p Constants.Allometrics.lmin Constants.Allometrics.k5 Constants.Allometrics.k6 2. r)
-let biomass = radius |> List.map (fun r -> ModelComponents.Proxies.toBiomassMM r)
-volume |> List.zip radius
-let rgr = biomass |> List.pairwise |> List.map(fun (b1,b2) -> (b2 - b1) / b1)
+// let radius = [ 1. .. 1. .. 100. ] // in mm
+// let height = radius |> List.map (fun r -> ModelComponents.Allometrics.shrubHeight Constants.Allometrics.k5 Constants.Allometrics.k6 (r / 10.))
+// let volume = height |> List.map (fun r -> vol Constants.Allometrics.b Constants.Allometrics.a Constants.Allometrics.rtip Constants.Allometrics.p Constants.Allometrics.lmin Constants.Allometrics.k5 Constants.Allometrics.k6 2. r)
+// let biomass = radius |> List.map (fun r -> ModelComponents.Proxies.toBiomassMM r)
+// volume |> List.zip radius
+// let rgr = biomass |> List.pairwise |> List.map(fun (b1,b2) -> (b2 - b1) / b1)
 
-R.plot(radius, height)
-R.plot(volume |> List.map snd, height)
-R.lines(radius, volume |> List.map fst)
-R.plot(radius, biomass)
+// R.plot(radius, height)
+// R.plot(volume |> List.map snd, height)
+// R.lines(radius, volume |> List.map fst)
+// R.plot(radius, biomass)
 
-// A. Volume vs Height
-R.plot(volume |> List.map snd, height)
+// // A. Volume vs Height
+// R.plot(volume |> List.map snd, height)
 
-// D. Volume vs Twig Count
-let twigCount = volume |> List.map (fun (t,_) -> 3. * 2. ** t)
-R.plot(volume |> List.map snd, twigCount)
+// // D. Volume vs Twig Count
+// let twigCount = volume |> List.map (fun (t,_) -> 3. * 2. ** t)
+// R.plot(volume |> List.map snd, twigCount)
 
-R.plot(radius |> List.tail, rgr)
+// R.plot(radius |> List.tail, rgr)
