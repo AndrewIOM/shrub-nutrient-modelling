@@ -6,7 +6,7 @@ NUGET
     Accord.Statistics (3.8)
       Accord (>= 3.8)
       Accord.Math (>= 3.8)
-    Bristlecone (1.0.0-alpha2)
+    Bristlecone (1.0.0-alpha3)
       Accord.Statistics (>= 3.8) - restriction: >= netstandard2.0
       FSharp.Core (>= 4.3.4) - restriction: >= netstandard2.0
       FSharp.Data (>= 3.0) - restriction: >= netstandard2.0
