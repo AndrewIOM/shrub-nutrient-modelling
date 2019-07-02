@@ -6,7 +6,7 @@ open FSharp.Data
 // open ``1-shrub-nitrogen``
 open ``3-shrub-nitrogen-longterm``
 
-let loadFrom = "/Users/andrewmartin/Desktop/Bristlecone Results/LongTermThreeYearly/"
+let loadFrom = "/Users/andrewmartin/Desktop/Bristlecone Results/LongTermWithRepeatedNValues/"
 
 // A. Load in pre-computed results
 // ________________________________
@@ -29,12 +29,22 @@ let bestParameterPool step (constraints:Constraint[]) (r: BristleconeResult) =
 let hypothesisNumberFromFilename (name:string) =
     name.Split('H').[1].Split('-').[0] |> int
 
+open Bristlecone.PlantIndividual
+
 let fit engineAdditions endCondition s h =
-    let shrub = s |> PlantIndividual.toCumulativeGrowth
-    let common = shrub |> PlantIndividual.keepCommonYears
+    let shrub = s |> PlantIndividual.toCumulativeGrowth |> enforceMinimumRadius 1.53<mm>
+    printfn "Shrub = %A" shrub
+    let common = shrub |> tailGrowth |> PlantIndividual.keepCommonYears
+    printfn "Common = %A" common
     let startDate = (common.Environment.[ShortCode.create "N"]).StartDate |> snd
     let startConditions = getStartValues startDate shrub
     let e = Bristlecone.mkContinuous |> Bristlecone.withOutput Options.logger |> Bristlecone.withContinuousTime Integration.MathNet.integrate |> Bristlecone.withTunedMCMC [] |> Bristlecone.withConditioning (Custom startConditions) |> engineAdditions
+
+    // let shrub = s |> PlantIndividual.toCumulativeGrowth
+    // let common = shrub |> PlantIndividual.keepCommonYears
+    // let startDate = (common.Environment.[ShortCode.create "N"]).StartDate |> snd
+    // let startConditions = getStartValues startDate shrub
+    // let e = Bristlecone.mkContinuous |> Bristlecone.withOutput Options.logger |> Bristlecone.withContinuousTime Integration.MathNet.integrate |> Bristlecone.withTunedMCMC [] |> Bristlecone.withConditioning (Custom startConditions) |> engineAdditions
     common |> Bristlecone.PlantIndividual.fit e endCondition h
 
 let fitData =
@@ -49,6 +59,7 @@ let fitData =
         printfn "Hypothesis (%s) %i" headRow.Subject hypothesisNumber
         let a = fit id (Optimisation.EndConditions.afterIteration 0) realShrub hypothesis
         (realShrub, hypothesisNumber, a))
+    |> Array.filter(fun (_,_,r) -> not <| System.Double.IsNaN r.Likelihood )
     |> Array.groupBy(fun (plant,h,_) -> (plant, h))
     |> Array.map(fun ((plant,h),r) -> r |> Seq.minBy(fun (_,_,e) -> e.Likelihood))
     |> Array.groupBy(fun (plant,_,_) -> plant)
@@ -72,14 +83,12 @@ let fitData =
                 then
                     let e = 
                         v.Expected 
-                        |> Array.scan(fun (mass,_) newMass -> newMass, ((newMass - mass) / mass)) (startConditions.[code "x"],0.)
-                        |> Array.tail // Remove t0
-                        |> Array.map snd
+                        |> Array.pairwise
+                        |> Array.map(fun (a,b) -> (b-a) / a)
                     let o = 
                         v.Observed 
-                        |> Array.scan(fun (mass,_) newMass -> newMass, ((newMass - mass) / mass)) (startConditions.[code "x"],0.)
-                        |> Array.tail // Remove t0
-                        |> Array.map snd
+                        |> Array.pairwise
+                        |> Array.map(fun (a,b) -> (b-a) / a)
                     (e, o)
                 else (v.Expected, v.Observed)
             expected
@@ -94,7 +103,7 @@ type Prediction = CsvProvider<Sample = "PlantCode (string), Hypothesis (int), Va
 let buildRowFromObject = fun (a,b,c,d,e,f,g,h) -> Prediction.Row(a,b,c,d,e,f,g,h)
 let buildTableFromObjects = (Seq.map buildRowFromObject) >> Seq.toList >> Prediction
 let myCsv = fitData |> buildTableFromObjects
-myCsv.Save(sprintf "%sdphil-shrub-predictions-paper3-3yearly.csv" "/Users/andrewmartin/Desktop/")
+myCsv.Save(sprintf "%sdphil-shrub-predictions-paper3-repeated-data.csv" "/Users/andrewmartin/Desktop/")
 
 
 // Profile Likelihood Method
@@ -283,7 +292,7 @@ let bestAnswers =
     |> Array.collect(fun (s,h,ci) -> ci |> Seq.map(fun p -> ConfidenceData.Row(s, h, p.Key.Value, p.Value.Estimate, p.Value.``68%``.Lower, p.Value.``68%``.Upper, p.Value.``95%``.Lower, p.Value.``95%``.Upper)) |> Seq.toArray )
 
 let d = new ConfidenceData(bestAnswers)
-d.Save(sprintf "%sdphil-shrub-predictions-paper3-tuned-intervals.csv" "/Users/andrewmartin/Desktop/")
+d.Save(sprintf "%sdphil-shrub-predictions-paper3-tuned-intervals-2.csv" "/Users/andrewmartin/Desktop/")
 
 
 
@@ -320,3 +329,41 @@ let oneStepPredictions =
         |> Seq.minBy(fun (_,_,_,mle) -> mle)
         |> fun (_,_,d,_) ->
             Bristlecone.generateFixedSeries  )
+
+
+// Load and create predictions for individual model components
+
+let pData = ConfidenceData.Load (sprintf "%sdphil-shrub-predictions-paper1-tuned-intervals.csv" "/Users/andrewmartin/Desktop/")
+
+type ModelPredict = CsvProvider<Sample = "PlantCode (string), Hypothesis (int), X (float), Y (float), 68% Lower (float), 68% Upper (float), 95% Lower (float), 95% Upper (float)">
+
+let prediction =
+    pData.Rows
+    |> Seq.where(fun r -> r.Hypothesis = 3 && r.Parameter = "a")
+    |> Seq.collect(fun r -> 
+        [ 0.1 .. 0.01 .. 10.] 
+        |> List.map(fun x -> r.PlantCode, r.Hypothesis, x, ((r.Value / 1000.) * x), ((r.``68% Lower`` / 1000.) * x), ((r.``68% Upper`` / 1000.) * x), ((r.``95% Lower`` / 1000.) * x), ((r.``95% Upper`` / 1000.) * x)))
+    |> Seq.toList
+    |> List.map ModelPredict.Row
+
+let d = new ModelPredict(prediction)
+d.Save(sprintf "%shypothesis-3-n-limitation.csv" "/Users/andrewmartin/Desktop/")
+
+
+// 2. Alpha and loss rate
+let prediction =
+    pData.Rows
+    |> Seq.where(fun r -> r.Hypothesis = 4)
+    |> Seq.groupBy(fun r -> r.PlantCode)
+    |> Seq.collect(fun (p,r) ->
+        let alpha = r |> Seq.find(fun x -> x.Parameter = "alpha")
+        let gammab = r |> Seq.find(fun x -> x.Parameter = "gamma[b]") 
+        let compute a b x = ModelComponents.FeedbackToSoil.withBiomassLoss (a / 100.) b x
+        [ 0.0 .. 1.0 .. 10000.] 
+        |> List.map(fun x -> p, alpha.Hypothesis, x, compute alpha.Value gammab.Value x, compute alpha.``68% Lower`` gammab.``68% Lower`` x, compute alpha.``68% Upper`` gammab.``68% Upper`` x, compute alpha.``95% Lower`` gammab.``95% Lower`` x, compute alpha.``95% Upper`` gammab.``95% Upper`` x))
+    |> Seq.toList
+    |> List.map ModelPredict.Row
+
+let d = new ModelPredict(prediction)
+d.Save(sprintf "%shypothesis-4-alpha.csv" "/Users/andrewmartin/Desktop/")
+

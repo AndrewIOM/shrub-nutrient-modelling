@@ -96,12 +96,27 @@ module Allometrics =
 
 module GrowthLimitation =
 
-    /// A rearranged version of a Monod model
-    let hollingDiscModel a b h =
-        Some <| fun r -> (a * r) / (1. + (a * b * h * r))
+    /// **Description**
+    /// 
+    /// A function that represents the efficiency of two simultaneous
+    /// processes. The combined processes have a single 'handling time',
+    /// which represents the rate at which the processes occur.
+    /// 
+    /// **Parameters**
+    ///   * `a` - efficiency of process A
+    ///   * `b` - efficiency of process B
+    ///   * `h` - integrated handling time / rate of process A+B
+    ///   * `min` - a level of resource at which the resultant process is `> 1e-12`
+    let hollingDiscModelDual a b h min =
+        Some <| fun r -> 
+            if (a * min) / (1. + (a * b * h * min)) < 1e-12 then nan
+            else (a * r) / (1. + (a * b * h * r))
 
-    /// A rearranged version of a Monod model
-    let lizzy a h =
+    /// A rearranged version of a Monod model that represents
+    /// a single, saturating process.
+    ///   * `a` - efficiency of the process
+    ///   * `h` - handling time / rate of the process
+    let hollingDiscModel a h =
         Some <| fun r -> (a * r) / (1. + (a * h * r))
 
     /// TEST: An integrated supply and use model
@@ -109,8 +124,8 @@ module GrowthLimitation =
         Some <| fun resource -> (a * r * rootMass * resource) / (1. + a * b * r * rootMass * resource + a * h * resource)
 
     /// Monod model once saturation has been reached
-    let linear (a:float) =
-        Some <| fun r -> a * r
+    let linear (a:float) min =
+        Some <| fun r -> if a * min < 1e-12 then nan else a * r
 
     /// The resource enforces no limitation on growth, and is negated
     let none = None

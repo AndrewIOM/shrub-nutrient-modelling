@@ -5,8 +5,7 @@ let none _ = 1.
 let linear a t = a * t
 
 /// Activation energy is in KJ rather than J
-let arrhenius a ea t = a * System.Math.E ** (- ((ea * 1000.) / (8.314 * t)))
-
+let arrhenius a ea t = a * System.Math.E ** (- ((ea * 1000.) / (8.314 * t)))    
 
 module Soil =
 
@@ -23,6 +22,15 @@ module Soil =
     let localHeatFlux outsideTemp insideTemp conductivity : float =
         - conductivity * (outsideTemp - insideTemp)
 
+module Conductivity =
+
+    let linear conductivity = conductivity
+
+    let snowConductivity insulationFactor snowDepth =
+        snowDepth 
+        |> Soil.snowMassEffect insulationFactor
+
+
 module NitrogenReplenishment =
 
     let linear lambda = lambda
@@ -36,4 +44,3 @@ module NitrogenReplenishment =
         snowMass 
         |> Soil.snowMassEffect insulationFactor
         |> fun con -> temperatureDependent a ea con summerTemp winterTemp
-

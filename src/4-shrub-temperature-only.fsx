@@ -59,7 +59,7 @@ module Options =
         |> Bristlecone.withOutput logger
         |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.adaptiveMetropolis 0.250 500)
 
-    let orchestrator = OrchestrationAgent(logger, System.Environment.ProcessorCount)
+    let orchestrator = OrchestrationAgent(logger, System.Environment.ProcessorCount, false)
 
 
 // 2. Create Hypotheses
@@ -111,12 +111,7 @@ let hypotheses =
              code "Ea",             parameter PositiveOnly 1.00 2.00  ]
           (fun _ -> ModelComponents.Temperature.none), [] ]
 
-    let combine2 xs ys = [
-        for x in xs do
-        for y in ys do
-        yield (x, y) ]
-
-    combine2 growthModel temperature
+    List.allPairs growthModel temperature
     |> List.map (fun ((growth,gp),(temperature,tp)) -> 
         ``base model`` growth temperature (List.concat [gp; tp]))
 

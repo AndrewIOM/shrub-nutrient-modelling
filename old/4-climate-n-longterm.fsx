@@ -2,7 +2,8 @@
 #load "../packages/Bristlecone/bristlecone.fsx"
 #load "../packages/Bristlecone/charts.fsx"
 #load "components/components.fsx"
-#r "../packages/Bristlecone.Dendro/lib/netstandard2.0/Bristlecone.Dendro.dll"
+#load "components/temperature.fsx"
+#r "../packages/Bristlecone.Dendro/lib/netstandard2.0/bristlecone.Dendro.dll"
 
 ////////////////////////////////////////////////////
 /// Long-Term N-Shrub relations in Yamal, Russia
@@ -19,23 +20,18 @@ open Bristlecone.Workflow.Orchestration
 // ----------------------------
 
 module Options =
-    let resultsDirectory = "/Users/andrewmartin/Desktop/Bristlecone Results/LongTermWithRepeatedNValues/"
-    let chains = 1
-    let endWhen = Optimisation.EndConditions.afterIteration 1000000
+    let resultsDirectory = "/Users/andrewmartin/Desktop/ResultsTest/"
+    let chains = 2
+    let endWhen = Optimisation.MonteCarlo.SimulatedAnnealing.EndConditions.stoppedImproving 5
     let logger = Logging.RealTimeTrace.graphWithConsole 30. 10000
     let engine =
         Bristlecone.mkContinuous 
         |> Bristlecone.withContinuousTime Integration.MathNet.integrate
         |> Bristlecone.withOutput logger
-        |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.SimulatedAnnealing.fastSimulatedAnnealing 0.0001 
-            { Optimisation.MonteCarlo.SimulatedAnnealing.AnnealSettings<float>.Default with 
-                BoilingAcceptanceRate = 0.60
-                HeatRamp = (fun t -> t + sqrt t); TemperatureCeiling = Some 500.
-                HeatStepLength = Optimisation.EndConditions.afterIteration 1000
-                AnnealStepLength = Optimisation.EndConditions.afterIteration 5000
-                InitialTemperature = 1. }) //(Optimisation.EndConditions.afterIteration 10000) })
+        // |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.SimulatedAnnealing.fastSimulatedAnnealing 0.005 Optimisation.MonteCarlo.SimulatedAnnealing.AnnealSettings.Default)
+        |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.Filzbach.filzbach 0.01 (Optimisation.EndConditions.afterIteration 200000))
 
-    let orchestrator = OrchestrationAgent(logger, 6)//System.Environment.ProcessorCount)
+    let orchestrator = OrchestrationAgent(logger, System.Environment.ProcessorCount)
 
 // TEMP - Likelihood function with shrub comparison term
 let private getData s (predictions:CodedMap<PredictedSeries>) = predictions.Item (ShortCode.create s)
@@ -48,14 +44,14 @@ let bivariateGaussian' (p:ParameterPool) obsx obsy expx expy =
     let diffy = obsy - expy
     let sigmax = p |> Pool.getEstimate "sigma[x]"
     let sigmay = p |> Pool.getEstimate "sigma[y]"
-    // let sigmaz = (p |> Pool.getEstimate "sigma[z]") * 100.
+    let sigmaz = (p |> Pool.getEstimate "sigma[z]") * 100.
     let rho = p |> Pool.getEstimate "rho"
     let zta1 = (diffx / sigmax) ** 2.
     let zta2 = 2. * rho * ((diffx / sigmax) ** 1.) * ((diffy / sigmay) ** 1.)
     let zta3 = (diffy / sigmay) ** 2.
-    // let zta4 = (diffx / sigmaz) ** 2.
+    let zta4 = (diffx / sigmaz) ** 2.
     let vNegLog = 2. * pi * sigmax * sigmay * sqrt (1. - rho ** 2.)
-    let q = (1. / (1. - rho ** 2.)) * (zta1 + zta3 - zta2)
+    let q = (1. / (1. - rho ** 2.)) * (zta1 + zta3 + zta4 - zta2)
     vNegLog + (1./2.) * q
 
 /// <summary>
@@ -76,39 +72,40 @@ let bivariateGaussian key1 key2 p data =
 module BaseEquations =
 
     /// Cumulative stem biomass [dBs/dt]
-    let biomass b n r gammab geom f : float =
-        b * r * (f n) * geom(b) - gammab * b
+    let biomass b n r gammab geom f sigmaz tempEffect : float =
+        b * r * (f n) * geom(b) * tempEffect - gammab * b + sigmaz
 
-    let soilNitrogen n b gamman y geom f feedback : float =
-        y - (geom(b) * b * (f n)) - gamman * n + feedback(b)
+    let soilNitrogen n b gamman y geom f feedback tempEffect : float =
+        y - (geom(b) * b * (f n) * tempEffect) - gamman * n + feedback(b)
 
     let soilNitrogenNoUptake n b gamman y feedback : float =
         y - gamman * n + feedback(b)
 
 
-let ``base model`` maxGrowthRate nLimitation nitrogenFeedback additionalParameters =
+let ``base model`` maxGrowthRate nLimitation nitrogenFeedback nReplenishment temperatureDependency additionalParameters =
 
     /// Cumulative stem biomass [b].
-    let dbsdt' (b:float) n gammab r maxGrowthRate limit =
+    let dbsdt' (b:float) n gammab r maxGrowthRate limit sigmaz tempEffect =
         match limit with
-        | Some l -> BaseEquations.biomass b n (r * 1000.) gammab maxGrowthRate l
-        | None -> BaseEquations.biomass b n r gammab maxGrowthRate (fun _ -> 1.)
+        | Some l -> BaseEquations.biomass b n (r * 1000.) gammab maxGrowthRate l sigmaz tempEffect
+        | None -> BaseEquations.biomass b n r gammab maxGrowthRate (fun _ -> 1.) sigmaz tempEffect
 
     /// Bioavailable soil nitrogen [N]
-    let dndt' bs n lambda gamman maxGrowthRate feedback limit = 
+    let dndt' bs n nReplenishment gamman maxGrowthRate feedback limit tempEffect = 
         match limit with
-        | Some l -> BaseEquations.soilNitrogen n bs gamman lambda maxGrowthRate l feedback
-        | None -> BaseEquations.soilNitrogenNoUptake n bs gamman lambda feedback
+        | Some l -> BaseEquations.soilNitrogen n bs gamman nReplenishment maxGrowthRate l feedback tempEffect
+        | None -> BaseEquations.soilNitrogenNoUptake n bs gamman nReplenishment feedback
 
     /// Bristlecone function for dBs/dt
     let dbsdt p _ bs (e:Environment) =
+        // printfn "E = %A" e
         dbsdt' bs ((e.[ShortCode.create "N"]) |> ModelComponents.Proxies.d15NtoAvailability)
-            (p |> Pool.getEstimate "gamma[b]") ((p |> Pool.getEstimate "r")) (maxGrowthRate p) (nLimitation p)
+            (p |> Pool.getEstimate "gamma[b]") ((p |> Pool.getEstimate "r")) (maxGrowthRate p) (nLimitation p) ((p |> Pool.getEstimate "sigma[z]") * 100.) (temperatureDependency p e)
 
     /// Bristlecone function for dN/dt
     let dndt p _ n (e:Environment) =
         dndt' (e.[ShortCode.create "bs"]) (n |> ModelComponents.Proxies.d15NtoAvailability) 
-            (p |> Pool.getEstimate "lambda") (p |> Pool.getEstimate "gamma[n]") (maxGrowthRate p) (nitrogenFeedback p) (nLimitation p)
+            (nReplenishment p e) (p |> Pool.getEstimate "gamma[n]") (maxGrowthRate p) (nitrogenFeedback p) (nLimitation p) (temperatureDependency p e)
 
     /// Measurement (Size) variable: stem radius
     let stemRadius lastRadius lastEnv env =
@@ -121,16 +118,15 @@ let ``base model`` maxGrowthRate nLimitation nitrogenFeedback additionalParamete
     { Equations  = [ code "bs",        dbsdt
                      code "N",         dndt ] |> Map.ofList
       Measures   = [ code "x",         stemRadius ] |> Map.ofList
-      Parameters = [ // for nitrogen dynamics
-                     code "lambda",    parameter PositiveOnly   0.500 1.500   // Rate of nitrogen replenishment
+      Parameters = [ // density-dependent loss rates
                      code "gamma[n]",  parameter PositiveOnly   0.001 0.200   // Loss rate of nitrogen
-                     // for shrub physiology
                      code "gamma[b]",  parameter PositiveOnly   0.001 0.200   // Loss rate of biomass
-                     // for likelihood function
+                     // Quenching term for measuring biomass over- or unuder-prediction
+                     code "sigma[z]",  parameter Unconstrained  0.250 0.750   // Inter-shrub comparison term
+                     // likelihood calculation
                      code "rho",       parameter Unconstrained  -0.50 0.500   // Covariance between growth and nitrogen
                      code "sigma[x]",  parameter PositiveOnly   0.100 1.200   // Standard deviation of x (biomass)
                      code "sigma[y]",  parameter PositiveOnly   0.250 0.750   // Standard deviation of y (nitrogen)
-                     //code "sigma[z]",  parameter Unconstrained  0.250 0.750   // Inter-shrub comparison term
                     ] |> List.append additionalParameters |> Map.ofList
       Likelihood = bivariateGaussian "x" "N" }
 
@@ -141,10 +137,10 @@ let hypotheses =
         [ (fun p -> ModelComponents.GrowthLimitation.hollingDiscModel ((p |> Pool.getEstimate "a") / 1000.) ((p |> Pool.getEstimate "r") * 1000.) (p |> Pool.getEstimate "h")),
            [ code "a",      parameter PositiveOnly   0.100 4.000          // N-uptake efficiency
              code "h",      parameter PositiveOnly   0.100 4.000
-             code "r",      parameter PositiveOnly   0.500 1.000 ]      // N-handling time (including uptake and incorporation)
+             code "r",      parameter PositiveOnly   0.00001 0.0001 ]      // N-handling time (including uptake and incorporation)
           (fun p -> ModelComponents.GrowthLimitation.linear ((p |> Pool.getEstimate "a") / 1000.)), 
            [ code "a",      parameter PositiveOnly   0.001 0.010
-             code "r",      parameter PositiveOnly   0.500 1.000 ]        // N-uptake efficiency
+             code "r",      parameter PositiveOnly   0.100 1.000 ]        // N-uptake efficiency
           (fun _ -> ModelComponents.GrowthLimitation.none), 
           [ code "r",       parameter PositiveOnly   0.500 1.000 ] ]
 
@@ -160,9 +156,26 @@ let hypotheses =
            (fun p -> ModelComponents.GeometricConstraint.chapmanRichards ((p |> Pool.getEstimate "k") * 1000.)),
            [ code "k",  parameter PositiveOnly   3.00 5.00 ] ]     // Asymptotic biomass (grams)
 
-    List.combine3 geometricModes limitationModes feedbackModes
-    |> List.map (fun ((growth,gp),(limit,lp),(feedback,fp)) -> 
-        ``base model`` growth limit feedback (List.concat [lp; fp; gp]))
+    // [D] Net photosynthetic rate is temperature-dependent
+    let temperature =
+        [ //(fun _ -> ModelComponents.Temperature.none), []
+          (fun p e -> ModelComponents.Temperature.arrhenius (p |> Pool.getEstimate "A") (p |> Pool.getEstimate "Ea") (lookup e "T[max]")),
+           [ code "A",              parameter PositiveOnly 1.00 2.00
+             code "Ea",             parameter PositiveOnly 1.00 2.00  ] ]
+
+    // [E] Snow insulates soils, which increases the efficiency of N-mineralising microbes.
+    let replenish =
+        [ (fun p _ -> ModelComponents.Temperature.NitrogenReplenishment.linear (p |> Pool.getEstimate "lambda")),
+            [ code "lambda",        parameter PositiveOnly   0.00001 0.0001 ] ]
+        //   (fun p e -> ModelComponents.Temperature.NitrogenReplenishment.temperatureDependent (p |> Pool.getEstimate "lambda") (p |> Pool.getEstimate "soilEa") (p |> Pool.getEstimate "insulation") (lookup e "Tsummer") (lookup e "Twinter")),
+        //     [ code "lambda",        parameter PositiveOnly   0.001 10.00
+        //       code "soilEa",        parameter PositiveOnly   0.001 10.00
+        //       code "insulation",    parameter PositiveOnly   0.001 1.000 ] ]
+
+
+    List.combine5 geometricModes limitationModes feedbackModes replenish temperature
+    |> List.map (fun ((growth,gp),(limit,lp),(feedback,fp),(replenish,rp),(temperature,tp)) -> 
+        ``base model`` growth limit feedback replenish temperature (List.concat [lp; fp; gp; rp; tp]))
 
 
 // 3. Load Real Data and Estimate
@@ -187,67 +200,7 @@ let yuribeiD15N = YuribeiD15N.Load (__SOURCE_DIRECTORY__ + "/../data/yuribei-d15
 // - Where time-points are repeated, find the average
 // - Calculate the weighted average of each period (mixture)
 
-/// Converts input data into 3-year binned d15N and increment data
-let lowerResolution (plant:PlantIndividual) =
-
-    printfn "Plant is %A" plant
-
-    let growth =
-        match plant.Growth with
-        | PlantIndividual.PlantGrowth.RingWidth x ->
-            match x with
-            | Absolute rw -> rw
-
-    let isotopeByBin = 
-        bins
-        |> Seq.choose(fun binStart ->
-            let lowResBins =
-                regionalD15N.Rows
-                |> Seq.where(fun n -> n.Shrub = plant.Identifier.Value)
-                |> Seq.where(fun n -> n.BinLatest <= (binStart + 2) && n.BinOldest >= binStart)
-                |> Seq.map(fun r -> (r.BinOldest, r.BinLatest, r.D15N))
-                |> Seq.toList
-
-            // These are complete (pre-interpolated) TODO do this in code instead
-            let highResBins =
-                yuribeiD15N.Rows
-                |> Seq.where(fun n -> n.``Plant Code`` = plant.Identifier.Value)
-                |> Seq.where(fun n -> n.Date.Year <= (binStart + 2) && n.Date.Year >= binStart)
-                |> Seq.map(fun r -> (r.Date.Year, r.Date.Year, (float r.``Predictor 2``) ))
-                |> Seq.toList
-
-            let allData = 
-                highResBins 
-                |> Seq.append lowResBins 
-                |> Seq.sortBy (fun (s,_,_) -> s)
-                |> Seq.filter(fun (_,_,x) -> not <| System.Double.IsNaN x)
-
-            printfn "All data is %A" allData
-            printfn "Low data is %A" lowResBins
-            printfn "High data is %A" highResBins
-
-            if allData |> Seq.isEmpty then None
-            else
-                // Weighted average is:
-                // Get the ring increment for the whole bin and times isotope value
-                // Average by these values
-                try
-                    let weightedAverage =
-                        let weights = 
-                            let increments = allData |> Seq.map (fun (start,en,_) -> [ start .. en ] |> List.sumBy(fun y -> growth |> TimeSeries.findExact (System.DateTime(y, 12, 31)) |> fst |> removeUnit ))
-                            let totalIncrement = increments |> Seq.sum
-                            increments |> Seq.map(fun i -> i / totalIncrement)
-                        printfn "Weights are %A" weights
-                        allData
-                        |> Seq.zip weights
-                        |> Seq.averageBy(fun (weight,(s,e,d15n)) -> d15n * weight )
-                    Some (binStart + 2, weightedAverage)
-                with | _ -> None )
-        |> Seq.toList
-    isotopeByBin
-
-
-
+// NB The year is the last year in the N mixture period
 /// Converts input data into 3-year binned d15N and increment data
 let threeYearToAnnual (plant:PlantIndividual) =
 
@@ -304,6 +257,59 @@ let threeYearToAnnual (plant:PlantIndividual) =
         |> Seq.toList
     List.concat isotopeByBin
 
+// Temperature data
+
+type TemperatureData = CsvProvider<"/Users/andrewmartin/Projects/GitHub-Projects/shrub-nutrient-modelling/data/marre-sale-maxtemp.csv">
+
+// Interpolate missing values here!
+let interpolate (series:TimeSeries<'a option>) : TimeSeries<'a> =
+    series 
+    |> TimeSeries.toObservations
+    // TEMP: Just fill them in with 0...
+    |> Seq.map(fun x -> 
+        match (x |> fst) with 
+        | Some o -> (o, x |> snd)
+        | None ->  (0., x |> snd))
+    |> TimeSeries.fromObservations
+
+let temperatureData =
+    let maxTemperatures = TemperatureData.Load "/Users/andrewmartin/Projects/GitHub-Projects/shrub-nutrient-modelling/data/marre-sale-maxtemp.csv"
+    maxTemperatures.Rows
+    |> Seq.map(fun r -> ((if r.``T[max]`` = nan then None else Some r.``T[max]``), r.Date))
+    |> TimeSeries.fromObservations
+    |> interpolate
+
+temperatureData.Resolution
+
+let generaliseTemp desiredResolution (upscaleFunction:seq<Observation<'a>>->'a) (series:TimeSeries<'a>) =
+    let resolution = series |> resolution
+    let obs = series |> toObservations
+    match resolution with
+    | TemporalResolution.Variable -> invalidArg "desiredResolution" "Cannot generalise a variable-resolution time series"
+    | Fixed res ->
+        match res with
+        | Years oldYears ->
+            match desiredResolution with
+            | Years newYears ->
+                if newYears > oldYears && ((float newYears) % (float oldYears) = 0.) && ((obs |> Seq.length |> float) % (float newYears) = 0.)
+                then obs |> Seq.chunkBySize (newYears / oldYears) |> Seq.map (fun bin -> (bin |> upscaleFunction, bin |> Seq.head |> snd)) |> fromObservations
+                else invalidArg "desiredResolution" "The upscaled resolution was not a whole multiple of the old resolution"
+            | _ -> invalidArg "desiredResolution" "Cannot generalise an annual time series to a lower resolution"
+        | Days oldDays ->
+            match desiredResolution with
+            | Months newMonths ->
+                obs
+                |> Seq.groupBy(fun (_,t) -> (t.Year, t.Month))
+                |> Seq.map(fun ((y,m),g) -> (g |> upscaleFunction, g |> Seq.map snd |> Seq.max))
+                |> fromObservations
+        | _ -> invalidArg "desiredResolution" "Not implemented"
+
+
+let monthlyTemperatures =
+    temperatureData
+    |> generaliseTemp (Months 1) (fun x -> x |> Seq.averageBy fst) 
+
+monthlyTemperatures |> TimeSeries.resolution
 
 let shrubs =
     rw
@@ -316,11 +322,6 @@ let shrubs =
             |> TimeSeries.fromObservations
         plant |> PlantIndividual.zipEnv (code "N") isotope3Year )
     //|> List.skip 10 |> List.take 1
-
-shrubs
-|> List.map(fun x -> printfn "[%s] Res = %A" x.Identifier.Value x.Environment.[code "N"].Resolution)
-
-
 
 let getStartValues (startDate:System.DateTime) (plant:PlantIndividual) =
     let initialRadius =
@@ -336,23 +337,59 @@ let getStartValues (startDate:System.DateTime) (plant:PlantIndividual) =
         | _ -> invalidOp "Not implemented 2"
     let initialMass = initialRadius |> removeUnit |> ModelComponents.Proxies.toBiomassMM
     let initialNitrogen = plant.Environment.[ShortCode.create "N"].Head |> fst
+    let initialTmax = plant.Environment.[ShortCode.create "T[max]"].Head |> fst
     [ (ShortCode.create "x", initialRadius)
       (ShortCode.create "N", initialNitrogen)
+      (ShortCode.create "T[max]", initialTmax)
       (ShortCode.create "bs", initialMass) ] |> Map.ofList
+
+let enforceMinimumRadius minSize plant =
+    let bounded = 
+        match plant.Growth with
+        | RingWidth rw ->
+            match rw with
+            | Cumulative g -> 
+                g 
+                |> TimeSeries.toObservations 
+                |> Seq.skipWhile (fun (x,_) -> x < minSize) 
+                |> TimeSeries.fromObservations 
+                |> Cumulative
+            | _ -> invalidOp "Not implemented"
+        | _ -> invalidOp "Not implemented"
+    { plant with Growth = bounded |> RingWidth }
 
 let workPackages shrubs hypotheses engine saveDirectory =
     seq {
         for s in shrubs do
 
             // 1. Arrange the subject and settings
-            let shrub = s |> PlantIndividual.toCumulativeGrowth
+            let shrub = s |> PlantIndividual.toCumulativeGrowth |> PlantIndividual.zipEnv (code "T[max]") monthlyTemperatures
             printfn "Shrub = %A" shrub
-            let common = shrub |> PlantIndividual.keepCommonYears
+            let common = 
+                shrub 
+                |> enforceMinimumRadius 1.53<mm>
+                |> PlantIndividual.keepCommonYears
+                |> PlantIndividual.zipEnv (code "T[max]") monthlyTemperatures
             printfn "Common = %A" common
             let startDate = (common.Environment.[ShortCode.create "N"]).StartDate |> snd
             let startConditions = getStartValues startDate shrub
             let e = engine |> Bristlecone.withConditioning (Custom startConditions)
 
+
+            // // 1. Arrange the subject and settings
+            // let shrub = 
+            //     s 
+            //     |> PlantIndividual.toCumulativeGrowth
+            //     |> PlantIndividual.zipEnv (code "T[max]") monthlyTemperatures
+            // let common = 
+            //     shrub 
+            //     |> PlantIndividual.keepCommonYears
+            //     |> PlantIndividual.zipEnv (code "T[max]") monthlyTemperatures
+            // printfn "Common = %A" common
+            // let startDate = (common.Environment.[ShortCode.create "N"]).StartDate |> snd
+            // let startConditions = getStartValues startDate shrub
+            // let e = engine |> Bristlecone.withConditioning (Custom startConditions)
+            
             // 2. Setup batches of dependent analyses
             for h in [ 1 .. hypotheses |> List.length ] do
                 for i in [ 1 .. Options.chains ] do
@@ -361,14 +398,14 @@ let workPackages shrubs hypotheses engine saveDirectory =
                             // A. Compute result
                             let result = Bristlecone.PlantIndividual.fit e Options.endWhen hypotheses.[h-1] common
                             // B. Save to file
-                            Bristlecone.Data.Cache.saveTrace saveDirectory s.Identifier.Value h jobId [ result ]
+                            Bristlecone.Data.EstimationResult.saveAll saveDirectory s.Identifier.Value h result
                             return result }
     }
 
 // Orchestrate the analyses
-let work = workPackages (shrubs |> Seq.where(fun x -> x.Identifier.Value = "S8N0115A" || x.Identifier.Value = "S8N0122A" || x.Identifier.Value = "S8N0129A") |> Seq.where(fun x -> x.Environment.[code "N"].Resolution <> TemporalResolution.Variable)) hypotheses Options.engine Options.resultsDirectory
-// work |> Seq.iter (OrchestrationMessage.StartWorkPackage >> Options.orchestrator.Post)
+let work = workPackages (shrubs |> Seq.where(fun x -> x.Environment.[code "N"].Resolution <> TemporalResolution.Variable)) hypotheses Options.engine Options.resultsDirectory
+work |> Seq.take 2 |> Seq.iter (OrchestrationMessage.StartWorkPackage >> Options.orchestrator.Post)
 
-// work |> Seq.head |> Async.RunSynchronously
+// work |> Seq.skip 0 |> Seq.head |> Async.RunSynchronously
 
-// shrubs.[1]
+shrubs.[1]
