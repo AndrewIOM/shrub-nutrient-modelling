@@ -484,36 +484,17 @@ let saveLog (cLog:ComponentLogger) (h:int) plantCode (guid:System.Guid) =
         for ts in m.Value do
             csv.WriteLine (sprintf "%s,%f,%.16e" m.Key ts.Key ts.Value)
 
-let redo =
-    [
-        "BV14B", 18
-        "BV14B", 22
-        "MYSL9A", 18
-        "S8N0110A", 9
-        "S8N0110A", 19
-        "S8N0110A", 20
-        "S8N0110A", 21
-        "S8N0110A", 22
-        "S8N0115A", 1
-        "S8N0115A", 2
-        "S8N0115A", 7
-        "S8N0115A", 18
-        "S8N0121A", 1
-        "S8N0121A", 18
-    ]
-
 let workPackages shrubs hypotheses engine saveDirectory =
     seq {
         for s in shrubs do
             for h in [ 1 .. hypotheses |> List.length ] do //hypotheses |> List.length ] do // Skip first (non-temperature) hypotheses
                 for _ in [ 1 .. Options.chains ] do
-                    if redo |> Seq.contains(s.Identifier.Value, h) then
-                        yield async {
-                                let cLog = ComponentLogger(true)
-                                let result = fit engine Options.endWhen s (hypotheses.[h-1] cLog) |> fst
-                                saveLog cLog h s.Identifier.Value (result).ResultId
-                                Bristlecone.Data.EstimationResult.saveAll saveDirectory s.Identifier.Value h 100 result
-                                return result }
+                    yield async {
+                            let cLog = ComponentLogger(true)
+                            let result = fit engine Options.endWhen s (hypotheses.[h-1] cLog) |> fst
+                            saveLog cLog h s.Identifier.Value (result).ResultId
+                            Bristlecone.Data.EstimationResult.saveAll saveDirectory s.Identifier.Value h 100 result
+                            return result }
     }
 
 // Orchestrate the analyses

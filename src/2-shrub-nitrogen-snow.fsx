@@ -1,4 +1,4 @@
-// #r "../packages/NETStandard.Library.NETFramework/build/net461/lib/netstandard.dll"
+#r "../packages/NETStandard.Library.NETFramework/build/net461/lib/netstandard.dll"
 #r "../packages/MathNet.Numerics.FSharp/lib/netstandard2.0/MathNet.Numerics.FSharp.dll"
 #load "../packages/Bristlecone/bristlecone.fsx"
 // #load "../packages/Bristlecone/charts.fsx"
@@ -18,6 +18,8 @@ open Bristlecone.Dendro
 open Bristlecone.Dendro.PlantIndividual
 open Bristlecone.Workflow.Orchestration
 
+let x = MathNet.Numerics.Random.MersenneTwister()  // For some reason, this is needed on .net core??
+
 module CustomLog =
 
     open System.Threading
@@ -26,7 +28,7 @@ module CustomLog =
     let print threadId (x:LogEvent) = 
         match x with
         | Bristlecone.Logging.OptimisationEvent e ->
-            if e.Iteration % 100 = 0
+            if e.Iteration % 1000 = 0
             then printfn "##%i## At iteration %i (-logL = %f) %A" threadId e.Iteration e.Likelihood e.Theta
         | _ -> printfn "##%i## %A" threadId x
 
@@ -397,17 +399,6 @@ let getStartValues (startDate:System.DateTime) (plant:PlantIndividual) =
       code "snowDepth", initialSnow
       code "bs", initialMass ] |> Map.ofList
 
-let todo =
-    [ "YUSL03A", 1 
-      "YUSL05A", 1
-      "YUSL05A", 3
-      "YUSL05A", 4
-      "YUSL39A", 13
-      "YUSL39A", 14
-      "YUSL39A", 15
-      "YUSL39A", 16
-      "YUSL26A", 18 ]
-
 let workPackages shrubs hypotheses engine saveDirectory =
     seq {
         for s in shrubs do
@@ -431,7 +422,7 @@ let workPackages shrubs hypotheses engine saveDirectory =
             // 2. Setup batches of dependent analyses
             for h in [ 1 .. hypotheses |> List.length ] do
                 for _ in [ 1 .. Options.chains ] do
-                    if todo |> Seq.contains (s.Identifier.Value, h) then //h < 13 then // Just catches the 'most complex' base models for this paper..
+                    if h < 25 then //h < 13 then // Just catches the 'most complex' base models for this paper..
                         yield async {
                                 let cLog = ComponentLogger(true)
                                 let result = Bristlecone.PlantIndividual.fit e Options.endWhen (hypotheses.[h-1] cLog startDate Options.latitude Options.longitude Options.timezone) shrubWithHighResEnvironment
