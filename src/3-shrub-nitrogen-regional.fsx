@@ -55,7 +55,7 @@ module CustomLog =
 // ----------------------------
 
 module Options =
-    let resultsDirectory = "/Users/andrewmartin/Desktop/Bristlecone Results/Paper3-Repeated-AM-CleanMCMC/"
+    let resultsDirectory = "/Users/andrewmartin/Desktop/Bristlecone Results/Paper3-Repeated-Final/"
     let chains = 1
     let endWhen = Optimisation.EndConditions.afterIteration 100000
     let logger = CustomLog.logger() //Logging.RealTimeTrace.graphWithConsole 60. 10000
@@ -63,22 +63,40 @@ module Options =
         TuneAfterChanges = 20
         MaxScaleChange = 100.00
         MinScaleChange = 0.0010
-        BurnLength = Optimisation.EndConditions.afterIteration 100000 }
+        BurnLength = Optimisation.EndConditions.afterIteration 500000 }
     let engine =
         Bristlecone.mkContinuous 
         |> Bristlecone.withContinuousTime Integration.MathNet.integrate
         |> Bristlecone.withOutput logger
-        |> Bristlecone.withTunedMCMC [ Optimisation.MonteCarlo.TuneMethod.CovarianceWithScale 0.100, 1000, Optimisation.EndConditions.afterIteration 100000 ]
+        // |> Bristlecone.withTunedMCMC [ Optimisation.MonteCarlo.TuneMethod.CovarianceWithScale 0.100, 1000, Optimisation.EndConditions.afterIteration 100000 ]
         // |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.Filzbach.filzbach filzbachOptions)
         // |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.adaptiveMetropolis 0.250 500)
-        // |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.SimulatedAnnealing.fastSimulatedAnnealing 0.01 false
-        //     { Optimisation.MonteCarlo.SimulatedAnnealing.AnnealSettings<float>.Default with 
-        //         BoilingAcceptanceRate = 0.85
-        //         HeatRamp = (fun t -> t + sqrt t); TemperatureCeiling = Some 100.
-        //         HeatStepLength = Optimisation.EndConditions.afterIteration 1000
-        //         AnnealStepLength = (fun x -> Optimisation.MonteCarlo.SimulatedAnnealing.EndConditions.improvementCount 5000 250 x || Optimisation.EndConditions.afterIteration 10000 x) }) //(Optimisation.EndConditions.afterIteration 10000) })
+        |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.SimulatedAnnealing.fastSimulatedAnnealing 0.01 true
+            { Optimisation.MonteCarlo.SimulatedAnnealing.AnnealSettings<float>.Default with 
+                InitialTemperature = 100.
+                TemperatureCeiling = Some 100.
+                HeatRamp = (fun t -> t + 5.00)
+                BoilingAcceptanceRate = 0.85
+                HeatStepLength = Optimisation.EndConditions.afterIteration 1000
+                TuneLength = 1000
+                AnnealStepLength = (fun x -> (*Optimisation.MonteCarlo.SimulatedAnnealing.EndConditions.improvementCount 5000 250 x ||*) Optimisation.EndConditions.afterIteration 10000 x) }) //(Optimisation.EndConditions.afterIteration 10000) })
 
-    let orchestrator = OrchestrationAgent(logger, System.Environment.ProcessorCount, false)//System.Environment.ProcessorCount, false)
+    let orchestrator = OrchestrationAgent(logger, System.Environment.ProcessorCount, false)
+
+
+type ComponentLogger(turnOff) =
+
+    let mutable (data:Map<string,Map<float,float>>) = [] |> Map.ofList
+    with
+        member __.StoreValue(componentId, t, v) =
+            if not turnOff then
+                let existing = data |> Map.tryFind componentId
+                match existing with
+                | Some e -> data <- data |> Map.add componentId (e |> Map.add t v)
+                | None -> data <- data |> Map.add componentId ([t,v] |> Map.ofList)
+            v
+
+        member __.GetAll() = data
 
 
 // 2. Create Hypotheses
@@ -87,40 +105,55 @@ module Options =
 module BaseEquations =
 
     /// Cumulative stem biomass [dBs/dt]
-    let biomass b n r gammab geom f tempEffect sigmaz : float =
+    let biomass b n r gammab geom f tempEffect cLog : float =
         if r > 100000. then nan
-        else b * r * (f n) * geom(b) * tempEffect - gammab * b //+ sigmaz
+        else 
+            cLog "growthRate" (b * r * (f n) * geom(b) * tempEffect)
+            cLog "biomassLossRate" (gammab * b)
+            cLog "nUptake" (f n)
+            cLog "geometryEffect" (geom(b))
+            cLog "tLimitation" (tempEffect)
+            cLog "nLimitation" (r * (f n))
+            cLog "nAndtempLimitation" (r * (f n) * tempEffect)
+            b * r * (f n) * geom(b) * tempEffect - gammab * b //+ sigmaz
 
-    let soilNitrogen n b gamman y geom f feedback tempEffect : float =
+    let soilNitrogen n b gamman y geom f feedback tempEffect cLog : float =
+        cLog "plantSoilFeedback" (feedback(b))
+        cLog "abioticReplenishment" y
+        cLog "nEnvironmentalLoss" (-gamman * n)
+        cLog "nUseByPlant" ((geom(b) * b * (f n) * tempEffect))
         y - (geom(b) * b * (f n) * tempEffect) - gamman * n + feedback(b)
 
-    let soilNitrogenNoUptake n b gamman y feedback : float =
+    let soilNitrogenNoUptake n b gamman y feedback cLog : float =
+        cLog "plantSoilFeedback" (feedback(b))
+        cLog "abioticReplenishment" y
+        cLog "nEnvironmentalLoss" (-gamman * n)
+        cLog "nUseByPlant" 0.
         y - gamman * n + feedback(b)
 
 
-let ``base model`` maxGrowthRate nLimitation nitrogenFeedback tempEffect additionalParameters =
+let ``base model`` maxGrowthRate nLimitation nitrogenFeedback tempEffect additionalParameters (cLog:ComponentLogger) =
 
     /// Cumulative stem biomass [b].
-    let dbsdt' (b:float) n gammab r maxGrowthRate limit tLimit = //sigmaz =
+    let dbsdt' t (b:float) n gammab r maxGrowthRate limit tLimit =
         match limit with
-        | Some l -> BaseEquations.biomass b n (r * 1000.) gammab maxGrowthRate l tLimit 0.//sigmaz
-        | None -> BaseEquations.biomass b n r gammab maxGrowthRate (fun _ -> 1.) tLimit 0.//sigmaz
+        | Some l -> BaseEquations.biomass b n (r * 1000.) gammab maxGrowthRate l tLimit (fun name l -> cLog.StoreValue(name,t,l) |> ignore)
+        | None -> BaseEquations.biomass b n r gammab maxGrowthRate (fun _ -> 1.) tLimit (fun name l -> cLog.StoreValue(name,t,l) |> ignore)
 
     /// Bioavailable soil nitrogen [N]
-    let dndt' bs n lambda gamman maxGrowthRate feedback limit tLimit = 
+    let dndt' t bs n lambda gamman maxGrowthRate feedback limit tLimit = 
         match limit with
-        | Some l -> BaseEquations.soilNitrogen n bs gamman lambda maxGrowthRate l feedback tLimit
-        | None -> BaseEquations.soilNitrogenNoUptake n bs gamman lambda feedback
+        | Some l -> BaseEquations.soilNitrogen n bs gamman lambda maxGrowthRate l feedback tLimit (fun name l -> cLog.StoreValue(name,t,l) |> ignore)
+        | None -> BaseEquations.soilNitrogenNoUptake n bs gamman lambda feedback (fun name l -> cLog.StoreValue(name,t,l) |> ignore)
 
     /// Bristlecone function for dBs/dt
     let dbsdt p t bs (e:Environment) =
-        //printfn "T at %f is %f (tEffect = %f)" t (lookup e "T[max]" - 273.15) (tempEffect p e)
-        dbsdt' bs ((e.[ShortCode.create "N"]) |> ModelComponents.Proxies.d15NtoAvailability)
+        dbsdt' t bs ((e.[ShortCode.create "N"]) |> ModelComponents.Proxies.d15NtoAvailability)
             (p |> Pool.getEstimate "gamma[b]") ((p |> Pool.getEstimate "r")) (maxGrowthRate p) (nLimitation p) (tempEffect p e) //(p |> Pool.getEstimate "sigma[z]")
 
     /// Bristlecone function for dN/dt
-    let dndt p _ n (e:Environment) =
-        dndt' (e.[ShortCode.create "bs"]) (n |> ModelComponents.Proxies.d15NtoAvailability) 
+    let dndt p t n (e:Environment) =
+        dndt' t (e.[ShortCode.create "bs"]) (n |> ModelComponents.Proxies.d15NtoAvailability) 
             (p |> Pool.getEstimate "lambda") (p |> Pool.getEstimate "gamma[n]") (maxGrowthRate p) (nitrogenFeedback p) (nLimitation p) (tempEffect p e)
 
     /// Measurement (Size) variable: stem radius
@@ -159,7 +192,7 @@ let hypotheses =
            [ code "a",      parameter PositiveOnly   0.100 5.000          // N-uptake efficiency
              code "h",      parameter PositiveOnly   0.001 0.250
              code "r",      parameter PositiveOnly   1.000 10.00 ]      // N-handling time (including uptake and incorporation)
-          (fun p -> ModelComponents.GrowthLimitation.linear ((p |> Pool.getEstimate "a") / 1000.)), 
+          (fun p -> ModelComponents.GrowthLimitation.linear ((p |> Pool.getEstimate "a") / 1000.) 5.00), 
            [ code "a",      parameter PositiveOnly   0.001 0.010
              code "r",      parameter PositiveOnly   1.000 10.00 ]        // N-uptake efficiency
           (fun _ -> ModelComponents.GrowthLimitation.none), 
@@ -169,7 +202,7 @@ let hypotheses =
     let feedbackModes =
         [ (fun _ -> ModelComponents.FeedbackToSoil.none), []
           (fun p -> ModelComponents.FeedbackToSoil.withBiomassLoss ((p |> Pool.getEstimate "alpha") / 100.) (p |> Pool.getEstimate "gamma[b]") ),
-          [ code "alpha",  parameter PositiveOnly   0.001 0.01 ] ]    // N-recycling efficiency
+          [ code "alpha",  parameter PositiveOnly   0.001 0.100 ] ]    // N-recycling efficiency
 
     // [C] A plant may be subject to mechanical constraints on its maximum size
     let geometricModes = 
@@ -190,7 +223,7 @@ let hypotheses =
     let temperature =
         [ (fun _ -> ModelComponents.Temperature.none), []
           (fun p e -> temperatureLimitation 1. (p |> Pool.getEstimate "Ea") (lookup e "T[max]")),
-           [ code "Ea",             parameter PositiveOnly 0.10 0.50  ] ]
+           [ code "Ea",             parameter PositiveOnly 10.00 30.00  ] ]
 
     List.combine4 temperature geometricModes limitationModes feedbackModes
     |> List.map (fun ((temperature,tp),(growth,gp),(limit,lp),(feedback,fp)) -> 
@@ -243,6 +276,9 @@ let lowerResolution (plant:PlantIndividual) =
         | PlantIndividual.PlantGrowth.RingWidth x ->
             match x with
             | Absolute rw -> rw
+            | Cumulative(_) -> failwith "Not Implemented"
+            | Relative(_) -> failwith "Not Implemented"
+        | _ -> failwith "Not implemented"
 
     let isotopeByBin = 
         bins
@@ -304,6 +340,9 @@ let threeYearToAnnual (plant:PlantIndividual) =
         | PlantIndividual.PlantGrowth.RingWidth x ->
             match x with
             | Absolute rw -> rw
+            | Cumulative(_) -> failwith "Not Implemented"
+            | Relative(_) -> failwith "Not Implemented"
+        | _ -> failwith "not implemented"
 
     let (isotopeByBin:(int*float) list list) = 
         bins
@@ -375,7 +414,7 @@ let getStartValues (startDate:System.DateTime) (plant:PlantIndividual) =
             | GrowthSeries.Absolute c -> c.Head |> fst |> removeUnit
             | GrowthSeries.Cumulative c -> 
                 let start = (c |> TimeSeries.trimStart (startDate - System.TimeSpan.FromDays(366.))).Values |> Seq.head |> removeUnit
-                printfn "Start cumulative growth = %f" start
+                // printfn "Start cumulative growth = %f" start
                 start
             | GrowthSeries.Relative _ -> invalidOp "Not implemented"
         | _ -> invalidOp "Not implemented 2"
@@ -428,29 +467,59 @@ let fit engine endCondition s hypothesis =
         then summerTemperature |> Seq.find(fun (s,_) -> s = "Marre Sale") // A Varandei shrub
         else summerTemperature |> Seq.find(fun (s,_) -> s = "Hoseda Hard") // A Yamal shrub
     let shrub = s |> PlantIndividual.toCumulativeGrowth |> enforceMinimumRadius 1.53<mm> |> PlantIndividual.zipEnv (code "T[max]") (snd tMax)
-    printfn "Shrub = %A" shrub
+    // printfn "Shrub = %A" shrub
     let common = shrub |> tailGrowth |> PlantIndividual.keepCommonYears |> PlantIndividual.zipEnv (code "T[max]") (snd tMax)
-    printfn "Common = %A" common
+    // printfn "Common = %A" common
     let startDate = (common.Environment.[ShortCode.create "N"]).StartDate |> snd
     let startConditions = getStartValues startDate shrub
     let e = engine |> Bristlecone.withConditioning (Custom startConditions)
     Bristlecone.PlantIndividual.fit e endCondition hypothesis common
 
-let workPackages shrubs (hypotheses:ModelSystem list) engine saveDirectory =
+let saveLog (cLog:ComponentLogger) (h:int) plantCode (guid:System.Guid) =
+    let filePath = (sprintf "%sbristlecone-%s-%i-components-%s.csv" Options.resultsDirectory plantCode h (guid.ToString()))
+    if System.IO.File.Exists filePath then System.IO.File.Delete filePath
+    use csv = System.IO.File.AppendText filePath
+    let x = cLog.GetAll()
+    for m in x do
+        for ts in m.Value do
+            csv.WriteLine (sprintf "%s,%f,%.16e" m.Key ts.Key ts.Value)
+
+let redo =
+    [
+        "BV14B", 18
+        "BV14B", 22
+        "MYSL9A", 18
+        "S8N0110A", 9
+        "S8N0110A", 19
+        "S8N0110A", 20
+        "S8N0110A", 21
+        "S8N0110A", 22
+        "S8N0115A", 1
+        "S8N0115A", 2
+        "S8N0115A", 7
+        "S8N0115A", 18
+        "S8N0121A", 1
+        "S8N0121A", 18
+    ]
+
+let workPackages shrubs hypotheses engine saveDirectory =
     seq {
         for s in shrubs do
             for h in [ 1 .. hypotheses |> List.length ] do //hypotheses |> List.length ] do // Skip first (non-temperature) hypotheses
                 for _ in [ 1 .. Options.chains ] do
-                    yield async {
-                            let result = fit engine Options.endWhen s hypotheses.[h-1] |> fst
-                            Bristlecone.Data.EstimationResult.saveAll saveDirectory s.Identifier.Value h 25 result
-                            return result }
+                    if redo |> Seq.contains(s.Identifier.Value, h) then
+                        yield async {
+                                let cLog = ComponentLogger(true)
+                                let result = fit engine Options.endWhen s (hypotheses.[h-1] cLog) |> fst
+                                saveLog cLog h s.Identifier.Value (result).ResultId
+                                Bristlecone.Data.EstimationResult.saveAll saveDirectory s.Identifier.Value h 100 result
+                                return result }
     }
 
 // Orchestrate the analyses
 let work = workPackages (shrubs |> Seq.where(fun x -> x.Environment.[code "N"].Resolution <> TemporalResolution.Variable)) hypotheses Options.engine Options.resultsDirectory
 let run () =
-    work |> Seq.take 100 |> Seq.iter (OrchestrationMessage.StartWorkPackage >> Options.orchestrator.Post)
+    work |> Seq.iter (OrchestrationMessage.StartWorkPackage >> Options.orchestrator.Post)
 
 
 
@@ -460,96 +529,328 @@ let run () =
 open Bristlecone.Optimisation.ConfidenceInterval
 open Bristlecone.Data
 
+let loadAll directory subject (modelSystem:ModelSystem) modelId =
+    let mles = MLE.load directory subject modelId |> Seq.map(fun (k,v) -> k.ToString(), v)
+    let series = Series.load directory subject modelId |> Seq.map(fun (k,v) -> k.ToString(), v)
+    mles
+    |> Seq.keyMatch series
+    |> Seq.map(fun (k,v1,v2) -> (k, (v1, v2)))
+    |> Seq.choose(fun (k,(s,(l,p))) ->
+        try
+            let parameters = 
+                // Convert 'b' into 'h'
+                modelSystem.Parameters |> Map.map(fun k v -> 
+                    if Option.isNone (p |> Map.tryFind k)
+                    then
+                        printfn "Found a 'b' model..."
+                        // h = b / (r * a)
+                        let h = (p |> Map.find (code "b")) / ((p |> Map.find (code "r")) * (p |> Map.find (code "a")))
+                        Parameter.setEstimate v h
+                    else Parameter.setEstimate v (p |> Map.find k))
+            { ResultId = k |> System.Guid.Parse
+              Likelihood = l
+              Parameters = parameters
+              Series = s
+              Trace = [] } |> Some
+        with _ -> None )
+
 // A. Load best MLE estimates
 let results =
     List.allPairs shrubs (hypotheses |> List.mapi(fun i v -> (i+1,v)))
     |> List.map (fun (s,(hi,h)) ->
         let r = 
-            [ //EstimationResult.loadAll Options.resultsDirectory s.Identifier.Value h hi
-              EstimationResult.loadAll "/Users/andrewmartin/Desktop/Bristlecone Results/LongTermWithRepeatedNValues-TempIndependent" s.Identifier.Value h hi ] |> Seq.concat
+            [ loadAll Options.resultsDirectory s.Identifier.Value (h (ComponentLogger(false))) hi
+              loadAll "/Users/andrewmartin/Desktop/Bristlecone Results/LongTermWithRepeatedNValues-TempIndependent" s.Identifier.Value (h (ComponentLogger(false))) hi ] |> Seq.concat
+        printfn "[%s %i] %A" s.Identifier.Value hi (r |> Seq.map(fun r -> r.Likelihood))
         if r |> Seq.isEmpty
         then (s, h, hi, None )
-        else (s, h, hi, r |> Seq.minBy(fun x -> x.Likelihood) |> Some ))
+        else 
+            let r' = r |> Seq.filter(fun x -> not (System.Double.IsNaN(x.Likelihood)))
+            if Seq.isEmpty r'
+            then (s, h, hi, None )
+            else 
+                printfn "[%s %i] %A" s.Identifier.Value hi (r' |> Seq.map(fun r -> r.Likelihood))
+                (s, h, hi, r' |> Seq.minBy(fun x -> x.Likelihood) |> Some ))
 
-// // B. Calculate Akaike weights
-// let weights = 
-//     results
-//     |> Seq.groupBy(fun (s,_,_,_) -> s.Identifier)
-//     |> Seq.collect(fun (_,r) ->
-//         let weights =
-//             r 
-//             |> Seq.choose(fun (s,h,hi,r) -> r) 
-//             |> ModelSelection.Akaike.akaikeWeights 
-//         r
-//         |> Seq.zip weights
-//         |> Seq.map (fun (w,(s,h,hi,r)) -> s.Identifier.Value, hi, fst w, snd w)
-//         |> Seq.toList )
-//     |> Seq.toList
+// A1. Save out clog for each using its parameters.
+let logOutComponents () =
+    let engine = Options.engine |> Bristlecone.withCustomOptimisation (Optimisation.None.passThrough)
+    results
+    |> List.iter(fun (s,h,hi,e) -> 
+        let cLog = ComponentLogger(false)
+        let p = (e.Value.Parameters |> Map.map(fun k v -> parameter Unconstrained (v |> Parameter.getEstimate) (v |> Parameter.getEstimate)))
+        // printfn "Parameters are %A" p
+        let hypothesis = { (h cLog) with Parameters = p }
+        let result = fit engine (Optimisation.EndConditions.afterIteration 0 ) s hypothesis |> fst
+        saveLog cLog hi s.Identifier.Value (e).Value.ResultId )
 
-// Bristlecone.Data.ModelSelection.save Options.resultsDirectory weights
+
+// B. Calculate Akaike weights
+let weights = 
+    results
+    |> Seq.groupBy(fun (s,_,_,_) -> s.Identifier)
+    |> Seq.collect(fun (_,r) ->
+        let weights =
+            r 
+            |> Seq.choose(fun (s,h,hi,r) -> r) 
+            |> fun x -> printfn "Seq is %A" x; x
+            |> ModelSelection.Akaike.akaikeWeights 
+        r
+        |> Seq.zip weights
+        |> Seq.map (fun (w,(s,h,hi,r)) -> s, h, hi, fst w, snd w)
+        |> Seq.toList )
+    |> Seq.toList
+
+results 
+|> Seq.filter(fun (p,m,a,b) -> a = 13 && p.Identifier.Value = "YUSL39A")
+|> Seq.map(fun (p,m,a,b) -> b)
+
+//Bristlecone.Data.ModelSelection.save Options.resultsDirectory (weights |> List.map(fun (x,y,z,a,b) -> x.Identifier.Value,z,a,b))
 
 // // TODO:
 // // Save Akaike weights: SubjectId * HypothesisId * -logL * ParamCount * AIC * AICc * AkaikeWeight
 
-// // C. Calculate confidence intervals
-// let confidenceIntervals() =
+// C. Calculate confidence intervals
+let confidenceIntervals() =
+    weights
+    |> Seq.toArray
+    |> Array.rev
+    |> Array.splitInto 12
+    |> Array.Parallel.map(fun x -> x |> Array.map (fun (s,h,hi,res,w) ->
+        let a = ProfileLikelihood.profile (fun x y z a -> fit x y z a |> fst) Options.engine s (h (ComponentLogger(true))) 10 res
+        Bristlecone.Data.Confidence.save Options.resultsDirectory s.Identifier.Value hi res.ResultId a
+        a))
+
+
+module ProfileWithLogging =
+
+    open Bristlecone.EstimationEngine
+    open Bristlecone.Logging
+    open Bristlecone.Optimisation.ConfidenceInterval.ProfileLikelihood
+
+    let logExists (h:int) plantCode (guid:System.Guid) =
+        let filePath = (sprintf "%sbristlecone-%s-%i-componentsci-%s.csv" Options.resultsDirectory plantCode h (guid.ToString()))
+        System.IO.File.Exists filePath
+
+    let saveLog (results:seq<string>) (h:int) plantCode (guid:System.Guid) =
+        let filePath = (sprintf "%sbristlecone-%s-%i-componentsci-%s.csv" Options.resultsDirectory plantCode h (guid.ToString()))
+        if System.IO.File.Exists filePath then System.IO.File.Delete filePath
+        use csv = System.IO.File.AppendText filePath
+        csv.WriteLine "Component,Time,CI,MinValue,MaxValue"
+        for m in results do csv.WriteLine m
+
+    /// The profile likelihood method samples the likelihood space
+    /// around the Maximum Likelihood Estimate 
+    let profile iterations fit engine subject (timeSeries:System.DateTime seq) (hypothesis:ComponentLogger-> ModelSystem) n (result:EstimationResult) =
+
+        // 1. Set estimation bounds to the MLE
+        let mleToBounds mlePool = mlePool |> Map.map(fun k v -> Parameter.create (Parameter.detatchConstraint v |> snd) (v |> Parameter.getEstimate) (v |> Parameter.getEstimate))
+        let hypothesisMle a = { hypothesis a with Parameters = mleToBounds result.Parameters }
+
+        // 2. Generate a trace of at least n samples that deviate in L less than 2.0
+        let results = OptimOutput()
+        let mle = result.Likelihood
+
+        let customFit = fit { engine with OptimiseWith = CustomOptimisationMethod.classic {CustomOptimisationMethod.TuneSettings.Default with MinimumSampleSize = iterations; KMax = iterations}; LogTo = fun e -> engine.LogTo e; results.SaveEvent e }
+        let rec fit' currentTrace =
+            let a = customFit (Optimisation.EndConditions.afterIteration n) subject (hypothesisMle (ComponentLogger(true)))
+            let validTrace = a.Trace |> List.filter(fun (l,_) -> (l - mle) < 2.00 && (l - mle) > 0.00) |> List.distinct
+            engine.LogTo <| GeneralEvent (sprintf "Profiling efficiency: %f/1.0." ((validTrace |> List.length |> float) / (float n)))
+            // if currentTrace |> List.append validTrace |> List.length < n
+            // then currentTrace |> List.append validTrace |> fit'
+            // else 
+            currentTrace |> List.append validTrace
+        fit' [] |> ignore
+
+        let trace = 
+            results.GetAll()
+            |> List.map(fun s -> (s.Likelihood, s.Theta |> Seq.toArray))
+        engine.LogTo <| GeneralEvent (sprintf "Actual trace was %A" trace)
+
+        printfn "Getting components for %i combinations" (trace |> List.distinct |> List.filter(fun x -> (x |> fst) - mle < Bounds.upperBound) |> List.length)
+
+        let customFit2 = fit (engine |> Bristlecone.withCustomOptimisation  Optimisation.None.passThrough |> Bristlecone.withOutput ignore)
+        let mleToBounds2 mlePool = mlePool |> Map.map(fun k v -> Parameter.create Unconstrained (v |> Parameter.getEstimate) (v |> Parameter.getEstimate))
+        let components =
+            let hypothesisMle a = { hypothesis a with Parameters = mleToBounds2 result.Parameters }
+            trace
+            |> List.distinct
+            |> List.filter(fun x -> (x |> fst) - mle < Bounds.upperBound)
+            |> List.map(fun t -> 
+                let p = Optimisation.ParameterPool.fromPoint ((hypothesisMle (ComponentLogger(false))).Parameters) (t |> snd)
+                let log = ComponentLogger(false)
+                let h = { (hypothesisMle log) with Parameters = p |> mleToBounds2 }
+                let result = customFit2 (Optimisation.EndConditions.afterIteration n) subject h
+                let logs = log.GetAll()
+                // printfn "Logs are %A" logs
+                fst t, logs )
+
+        printfn "Calculating at mle"
+
+        let mleLogs =
+            let hypothesisMle a = { hypothesis a with Parameters = mleToBounds2 result.Parameters }
+            let log = ComponentLogger(false)
+            let result = customFit2 (Optimisation.EndConditions.afterIteration n) subject (hypothesisMle log)
+            (result.Likelihood, log.GetAll())
+
+        let ts = timeSeries |> Seq.toArray
+        let results bound ci = 
+            components
+            |> Seq.append [mleLogs]
+            |> Seq.distinct
+            |> Seq.filter(fun x -> (x |> fst) - mle <= bound)
+            |> Seq.collect(fun (l,m) ->
+                m
+                |> Seq.collect(fun kv ->
+                    kv.Value
+                    |> Seq.map(fun ts -> kv.Key, ts.Key, ts.Value, l )))
+            |> Seq.groupBy(fun (a,b,c,d) -> (a,b))
+            |> Seq.map(fun (g,s) -> 
+                (fst g), (snd g), s |> Seq.map(fun (a,b,c,d) -> c) |> Seq.min, s |> Seq.map(fun (a,b,c,d) -> c) |> Seq.max)
+            |> Seq.filter(fun (_,b,_,_) -> b % 1.0 = 0. && b >= 0.)
+            |> Seq.map(fun (a,b,c,d) -> sprintf "%s,%s,%s,%.16e,%.16e" a (ts.[int b].ToString()) ci c d)
+
+        // 3. Calculate min and max at the specified limit for each parameter
+        let lowerInterval = trace |> interval (hypothesisMle (ComponentLogger(true))).Parameters.Count mle Bounds.lowerBound
+        let upperInterval = trace |> interval (hypothesisMle (ComponentLogger(true))).Parameters.Count mle Bounds.upperBound
+
+        let paramResult = 
+            result.Parameters
+            |> Seq.zip3 lowerInterval upperInterval
+            |> Seq.map(fun ((l1,l2),(u1,u2),p) -> 
+                p.Key, {
+                    Estimate = p.Value |> Parameter.getEstimate
+                    ``68%`` = { Lower = l1; Upper = l2 }
+                    ``95%`` = { Lower = u1; Upper = u2 }})
+            |> Map.ofSeq
+
+        let componentResult = 
+            results Bounds.upperBound "95"
+            |> Seq.append (results Bounds.lowerBound "68")
+            |> Seq.append (results 0. "mle")
+
+        paramResult, componentResult
+
+    let confidenceIntervals () =
+        weights
+        |> Seq.sortByDescending(fun (a,b,c,d,e) -> e.Weight)
+        |> Seq.where(fun (a,b,c,d,e) -> e.Weight > 0.05)
+        |> Seq.toArray
+        |> Array.splitInto System.Environment.ProcessorCount
+        |> Array.Parallel.map(fun x -> x |> Array.map (fun (s,h,hi,res,w) ->
+            if not <| logExists hi s.Identifier.Value res.ResultId then
+                let ts = s.Environment.[ShortCode.create "N"] |> TimeSeries.dates
+                let (pr,ar) = profile 50000 (fun x y z a -> fit x y z a |> fst) Options.engine s ts h 10 res
+                saveLog ar hi s.Identifier.Value res.ResultId
+                Bristlecone.Data.Confidence.save Options.resultsDirectory s.Identifier.Value hi res.ResultId pr
+            ))
+
+// ProfileWithLogging.confidenceIntervals()
+
+
+// // // Test
+// // // One-step-ahead analysis
+// let pretransform (data:CodedMap<TimeSeries<float>>) =
+//     data
+//     |> Map.toList
+//     |> List.collect(fun (k,v) ->
+//         if k = code "x"
+//         then [ (k, v); (code "bs", v |> TimeSeries.map(fun (x,_) -> x |> ModelComponents.Proxies.toBiomassMM)) ]
+//         else [ (k, v)] )
+//     |> Map.ofList
+
+// let oneStepAhead' engine hypothesis s pretransform parameters =
+//     let tMax = 
+//         if s.Identifier.Value.Contains "S8"
+//         then summerTemperature |> Seq.find(fun (s,_) -> s = "Marre Sale") // A Varandei shrub
+//         else summerTemperature |> Seq.find(fun (s,_) -> s = "Hoseda Hard") // A Yamal shrub
+//     let shrub = s |> PlantIndividual.toCumulativeGrowth |> enforceMinimumRadius 1.53<mm> |> PlantIndividual.zipEnv (code "T[max]") (snd tMax)
+//     // printfn "Shrub = %A" shrub
+//     let common = shrub |> tailGrowth |> PlantIndividual.keepCommonYears
+//     // printfn "Common = %A" common
+//     let startDate = (common.Environment.[ShortCode.create "N"]).StartDate |> snd
+//     let startConditions = getStartValues startDate shrub
+//     let e = engine |> Bristlecone.withConditioning (Custom startConditions)
+//     Bristlecone.PlantIndividual.predictAhead e hypothesis common pretransform parameters
+
+// let oneStepAhead = 
 //     results
 //     |> Seq.toArray
 //     |> Array.choose(fun (s,h,hi,r) ->
 //         r |> Option.map (fun res -> 
-//             let a = ProfileLikelihood.profile fit Options.engine s h 10 res
-//             Bristlecone.Data.Confidence.save Options.resultsDirectory s.Identifier.Value hi res.ResultId a
-//             a))
+//             oneStepAhead' Options.engine h s pretransform res.Parameters |> List.map (fun (r,x) -> r.Series) ))
+
+// type SOSRow = {
+//     Year: int
+//     Variable: string
+//     Observation: float
+//     OneStepPrediction: float
+// }
+
+// oneStepAhead
+// |> Array.collect(fun x -> x |> List.toArray |> Array.map(fun x -> x |> Map.map(fun k v -> v |> TimeSeries.toObservations |> Seq.head)))
+// |> Array.collect(fun x -> x |> Map.toArray )
+// |> Array.map(fun (k,o) -> {
+//     Year = (snd o).Year
+//     Variable = k.Value
+//     Observation = (fst o).Obs
+//     OneStepPrediction = (fst o).Fit
+// })
+// |> Array.map (fun x -> sprintf "%i,%s,%f,%f" x.Year x.Variable x.Observation x.OneStepPrediction)
+// |> String.concat "\n"
+// |> fun x -> System.IO.File.WriteAllText("/Users/andrewmartin/Desktop/onestepahead2.csv", x)
 
 
-// // Test
-// // One-step-ahead analysis
-let pretransform (data:CodedMap<TimeSeries<float>>) =
-    data
-    |> Map.toList
-    |> List.collect(fun (k,v) ->
-        if k = code "x"
-        then [ (k, v); (code "bs", v |> TimeSeries.map(fun (x,_) -> x |> ModelComponents.Proxies.toBiomassMM)) ]
-        else [ (k, v)] )
-    |> Map.ofList
 
-let oneStepAhead' engine hypothesis s pretransform parameters =
-    let tMax = 
-        if s.Identifier.Value.Contains "S8"
-        then summerTemperature |> Seq.find(fun (s,_) -> s = "Marre Sale") // A Varandei shrub
-        else summerTemperature |> Seq.find(fun (s,_) -> s = "Hoseda Hard") // A Yamal shrub
-    let shrub = s |> PlantIndividual.toCumulativeGrowth |> enforceMinimumRadius 1.53<mm> |> PlantIndividual.zipEnv (code "T[max]") (snd tMax)
-    printfn "Shrub = %A" shrub
-    let common = shrub |> tailGrowth |> PlantIndividual.keepCommonYears
-    printfn "Common = %A" common
-    let startDate = (common.Environment.[ShortCode.create "N"]).StartDate |> snd
-    let startConditions = getStartValues startDate shrub
-    let e = engine |> Bristlecone.withConditioning (Custom startConditions)
-    Bristlecone.PlantIndividual.predictAhead e hypothesis common pretransform parameters
 
-let oneStepAhead = 
+// Start chains that have already finished and run again..
+
+let workPackage (shrub:PlantIndividual) hi hypothesis engine saveDirectory =
+    async {
+        let cLog = ComponentLogger(true)
+        let result = fit engine Options.endWhen shrub (hypothesis cLog) |> fst
+        saveLog cLog hi shrub.Identifier.Value (result).ResultId
+        Bristlecone.Data.EstimationResult.saveAll saveDirectory shrub.Identifier.Value hi 100 result
+        return result
+    }
+
+let work2 =
     results
-    |> Seq.toArray
-    |> Array.choose(fun (s,h,hi,r) ->
-        r |> Option.map (fun res -> 
-            oneStepAhead' Options.engine h s pretransform res.Parameters |> List.map (fun (r,x) -> r.Series) ))
+    |> List.collect(fun (plant,h,hi,r) ->
+        match r with
+        | Some r ->
+            let mleToBounds mlePool = mlePool |> Map.map(fun k v -> Parameter.create (Parameter.detatchConstraint v |> snd) (v |> Parameter.getEstimate) (v |> Parameter.getEstimate))
+            let hypothesisMle a = { h a with Parameters = mleToBounds r.Parameters }
+            [ workPackage plant hi hypothesisMle Options.engine Options.resultsDirectory ]
+        | None -> [] )
 
-type SOSRow = {
-    Year: int
-    Variable: string
-    Observation: float
-    OneStepPrediction: float
-}
+let runAgain () =
+    work2 |> Seq.skip 204 |> Seq.iter (OrchestrationMessage.StartWorkPackage >> Options.orchestrator.Post)
 
-oneStepAhead
-|> Array.collect(fun x -> x |> List.toArray |> Array.map(fun x -> x |> Map.map(fun k v -> v |> TimeSeries.toObservations |> Seq.head)))
-|> Array.collect(fun x -> x |> Map.toArray )
-|> Array.map(fun (k,o) -> {
-    Year = (snd o).Year
-    Variable = k.Value
-    Observation = (fst o).Obs
-    OneStepPrediction = (fst o).Fit
-})
-|> Array.map (fun x -> sprintf "%i,%s,%f,%f" x.Year x.Variable x.Observation x.OneStepPrediction)
-|> String.concat "\n"
-|> fun x -> System.IO.File.WriteAllText("/Users/andrewmartin/Desktop/onestepahead2.csv", x)
+
+
+
+/// Stepwise solving: use MLE from less complex models in more complex models.
+/// A. Non-temperature 12 vs temperature 12
+let runAugmented () =
+
+    let work3 =
+        results
+        |> List.collect(fun (plant,h,hi,r) ->
+            match r with
+            | Some r ->
+                if hi > 12 then []
+                else
+                    // Is NOT a temperature hypothesis.
+                    // Get the temperature-eqivalent hypothesis and add Ea to this parameter pool.
+                    let h = hypotheses.[hi + 12 - 1]
+                    let mleToBounds mlePool = 
+                        mlePool 
+                        |> Map.map(fun k v -> Parameter.create (Parameter.detatchConstraint v |> snd) (v |> Parameter.getEstimate) ((v |> Parameter.getEstimate) + 0.01))
+                        |> Map.add (code "Ea") (parameter PositiveOnly 0.001 0.002 )
+                    let hypothesisMle a = { h a with Parameters = mleToBounds r.Parameters }
+                    [ workPackage plant hi hypothesisMle Options.engine Options.resultsDirectory ]
+            | None -> [] )
+
+    work3 |> Seq.iter (OrchestrationMessage.StartWorkPackage >> Options.orchestrator.Post)
+

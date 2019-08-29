@@ -85,7 +85,7 @@ module Allometrics =
         let findRadius volume =
             let v x = x |> NiklasAndSpatz_Allometry.stemLength k5 k6 |> shrubVolume b a rtip p lmin k5 k6 n |> snd
             let f = (fun x -> (v x) - volume )
-            Statistics.RootFinding.bisect 0 200 f 0.01 1000.00 1e-8 // Assumption that shrub radius is between 0.01 and 100.0cm.
+            Statistics.RootFinding.bisect 0 200 f 0.01 100.00 1e-8 // Assumption that shrub radius is between 0.01 and 100.0cm.
         mass
         |> massToVolume woodDensity
         |> findRadius
@@ -116,8 +116,15 @@ module GrowthLimitation =
     /// a single, saturating process.
     ///   * `a` - efficiency of the process
     ///   * `h` - handling time / rate of the process
-    let hollingDiscModel a h =
-        Some <| fun r -> (a * r) / (1. + (a * h * r))
+    let hollingDiscModel a h min =
+        Some <| fun r -> 
+            if (a * min) / (1. + (a * h * min)) < 1e-12 then nan
+            else (a * r) / (1. + (a * h * r))
+
+    let hollingSimple a h min =
+        Some <| fun r -> 
+            if (a * min) / (1. + (h * min)) < 1e-12 then nan
+            else (a * r) / (1. + (h * r))
 
     /// TEST: An integrated supply and use model
     let saturatingSupplySaturatingGrowth r a b h rootMass =
@@ -161,10 +168,12 @@ module Proxies =
     let toBiomassMM radiusMM = 
         radiusMM / 10. |> Allometrics.shrubBiomass Constants.Allometrics.b Constants.Allometrics.a Constants.Allometrics.rtip Constants.Allometrics.p Constants.Allometrics.lmin Constants.Allometrics.k5 Constants.Allometrics.k6 Constants.Allometrics.numberOfStems Constants.Allometrics.salixWoodDensity
 
-    /// Biomass in grams
+    /// Biomass in grams.
     let toRadiusMM biomassGrams = 
-        let radiusCm = biomassGrams |> Allometrics.shrubRadius Constants.Allometrics.b Constants.Allometrics.a Constants.Allometrics.rtip Constants.Allometrics.p Constants.Allometrics.lmin Constants.Allometrics.k5 Constants.Allometrics.k6 Constants.Allometrics.numberOfStems Constants.Allometrics.salixWoodDensity
-        radiusCm * 10.
+        if System.Double.IsNaN biomassGrams || System.Double.IsInfinity biomassGrams || System.Double.IsNegativeInfinity biomassGrams then nan
+        else
+            let radiusCm = biomassGrams |> Allometrics.shrubRadius Constants.Allometrics.b Constants.Allometrics.a Constants.Allometrics.rtip Constants.Allometrics.p Constants.Allometrics.lmin Constants.Allometrics.k5 Constants.Allometrics.k6 Constants.Allometrics.numberOfStems Constants.Allometrics.salixWoodDensity
+            radiusCm * 10.
 
     /// d15N to N availability. From Craine 2009, as shown in Craine 2015 (Plant and Soil).
     /// Assuming d15N is a linear index of N availability, the minimum supported value of d15N is -3.09, as 0 N availability.
