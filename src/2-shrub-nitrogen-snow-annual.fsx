@@ -25,18 +25,25 @@ let x = MathNet.Numerics.Random.MersenneTwister()
 // ----------------------------
 
 module Options =
-    let resultsDirectory = "/Users/andrewmartin/Desktop/Bristlecone Results/Paper2-Snow-Short-Annual/"
-    let endWhen = Optimisation.EndConditions.afterIteration 250000
-    let chains = 2
+    let resultsDirectory = "/Users/andrewmartin/Desktop/Bristlecone Results/Paper2-Snow-Short-Annual-SA-Cover/"
+    let endWhen = Optimisation.EndConditions.afterIteration 25000
+    let chains = 1
     let thin = 50
     let engine =
         Bristlecone.mkContinuous 
         |> Bristlecone.withContinuousTime Integration.MathNet.integrate
-        |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.Filzbach.filzbach 
-            { TuneAfterChanges = 50
-              MaxScaleChange = 100.00
-              MinScaleChange = 0.0010
-              BurnLength = Optimisation.EndConditions.afterIteration 250000 })
+        // |> Bristlecone.withTunedMCMC [ Optimisation.MonteCarlo.TuneMethod.CovarianceWithScale 0.250, 2000, Optimisation.EndConditions.afterIteration 75000 ]
+        // |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.Filzbach.filzbach 
+        //     { TuneAfterChanges = 50
+        //       MaxScaleChange = 100.00
+        //       MinScaleChange = 0.0010
+        //       BurnLength = Optimisation.EndConditions.afterIteration 250000 })
+        |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.SimulatedAnnealing.fastSimulatedAnnealing 0.0001 false
+            { Optimisation.MonteCarlo.SimulatedAnnealing.AnnealSettings<float>.Default with 
+                BoilingAcceptanceRate = 0.85
+                HeatRamp = (fun t -> t + sqrt t); TemperatureCeiling = Some 500.
+                HeatStepLength = Optimisation.EndConditions.afterIteration 1000
+                AnnealStepLength = (fun x -> Optimisation.MonteCarlo.SimulatedAnnealing.EndConditions.improvementCount 5000 250 x || Optimisation.EndConditions.afterIteration 5000 x) }) //(Optimisation.EndConditions.afterIteration 10000) })
 
     let orchestrator = OrchestrationAgent(engine.LogTo, System.Environment.ProcessorCount, false)
 
@@ -47,7 +54,8 @@ module Options =
 let ``base model`` maxGrowthRate nLimitation nitrogenFeedback nReplenishment protectionEffect temperatureDependency additionalParameters (cLog:IComponentLogger<float>) =
 
     let biomass b n r gammab geom f (protectionEffect:float) tempEffect lightEffect cLog : float =
-        b * r * (f n) * geom(b) * tempEffect * lightEffect - gammab * (1. - protectionEffect) * b
+        if protectionEffect > (1. - 1e-03) then nan // Protection cannot be perfect
+        else b * r * (f n) * geom(b) * tempEffect * lightEffect - gammab * (1. - protectionEffect) * b
 
     let soilNitrogen n b gamman y geom f feedback tempEffect lightEffect (protectionEffect:float) cLog : float =
         y - (geom(b) * b * (f n) * tempEffect * lightEffect) - gamman * n + feedback(b) * (1. - protectionEffect)
@@ -92,12 +100,12 @@ let ``base model`` maxGrowthRate nLimitation nitrogenFeedback nReplenishment pro
     { Equations  = [ code "bs",        dbsdt
                      code "N",         dndt ] |> Map.ofList
       Measures   = [ code "x",         stemRadius ] |> Map.ofList
-      Parameters = [ code "r",         parameter PositiveOnly   0.500 2.000   // Intrinsic growth rate
-                     code "gamma[b]",  parameter PositiveOnly   0.001 0.010   // Loss rate of biomass
-                     code "gamma[n]",  parameter PositiveOnly   0.001 0.010   // Loss rate of nitrogen
+      Parameters = [ code "r",         parameter PositiveOnly   0.500 1.000
+                     code "gamma[n]",  parameter PositiveOnly   0.001 0.200   // Loss rate of nitrogen
+                     code "gamma[b]",  parameter PositiveOnly   0.001 0.200   // Loss rate of biomass
                      code "rho",       parameter Unconstrained  -0.50 0.500   // Covariance between growth and nitrogen
-                     code "sigma[x]",  parameter PositiveOnly   0.001 0.500   // Standard deviation of x (biomass)
-                     code "sigma[y]",  parameter PositiveOnly   0.001 0.500   // Standard deviation of y (nitrogen)
+                     code "sigma[x]",  parameter PositiveOnly   0.001 0.100   // Standard deviation of x (biomass)
+                     code "sigma[y]",  parameter PositiveOnly   0.001 0.100   // Standard deviation of y (nitrogen)
                     ] |> List.append additionalParameters |> Map.ofList
       Likelihood = ModelLibrary.Likelihood.bivariateGaussian "x" "N" }
 
@@ -135,13 +143,13 @@ let hypotheses =
     let nitrogenReplenishment =
         [ (fun p _ -> ModelComponents.Temperature.NitrogenReplenishment.linear (p |> Pool.getEstimate "lambda")),
             [ code "lambda",        parameter PositiveOnly   0.001 1.000 ]
-          (fun p e -> ModelComponents.Temperature.NitrogenReplenishment.temperatureDependent (p |> Pool.getEstimate "soilExp") (p |> Pool.getEstimate "soilEa") (p |> Pool.getEstimate "insulation") (lookup e "Tsummer") (lookup e "Twinter")),
-            [ code "soilExp",        parameter PositiveOnly   0.001 1.000
-              code "soilEa",        parameter PositiveOnly   0.001 1.000
-              code "insulation",    parameter PositiveOnly   0.001 1.000 ]
+          (fun p e -> ModelComponents.Temperature.NitrogenReplenishment.temperatureDependent (p |> Pool.getEstimate "soilExp") (p |> Pool.getEstimate "soilEa") (p |> Pool.getEstimate "conductivity") (lookup e "Tsummer") (lookup e "Twinter")),
+            [ code "soilExp",       parameter PositiveOnly   0.001 1.000
+              code "soilEa",        parameter PositiveOnly   10.00 20.00
+              code "conductivity",    parameter PositiveOnly   0.001 1.000 ]
           (fun p e -> ModelComponents.Temperature.NitrogenReplenishment.temperatureDependentSnowInsulation (p |> Pool.getEstimate "soilExp") (p |> Pool.getEstimate "soilEa") (p |> Pool.getEstimate "insulation") (lookup e "snowDepth") (lookup e "Tsummer") (lookup e "Twinter")),
-            [ code "soilExp",        parameter PositiveOnly   0.001 1.000
-              code "soilEa",        parameter PositiveOnly   0.001 1.000
+            [ code "soilExp",       parameter PositiveOnly   0.001 1.000
+              code "soilEa",        parameter PositiveOnly   10.00 20.00
               code "insulation",    parameter PositiveOnly   0.001 1.000 ] ]
 
     // [B] Increased snow levels protect shrub biomass from storm and other damage.
@@ -155,7 +163,7 @@ let hypotheses =
         [ (fun _ -> ModelComponents.Temperature.none), []
           (fun p e -> NReplenishment.temperatureLimitation 1. (*(p |> Pool.getEstimate "A")*) (p |> Pool.getEstimate "Ea") (lookup e "Tsummer")),
            [ //code "A",              parameter PositiveOnly 5.00 20.0
-             code "Ea",             parameter PositiveOnly 20.00 40.00  ] ]
+             code "Ea",             parameter PositiveOnly 05.00 40.00  ] ]
 
     // [D] N may limited growth via combined N-limitations on (a) photosynthetic and (b) uptake rates
     let limitationModes =
@@ -291,7 +299,7 @@ let workPackages shrubs hypotheses engine saveDirectory =
         for s in shrubs do
             for h in [ 1 .. hypotheses |> List.length ] do
                 for _ in [ 1 .. Options.chains ] do
-                    if h = 12 || h = 24 then
+                    if h > 60 && h < 73 then
                         yield async {
                                 let cLog = PassThrough()
                                 let result = fit s (hypotheses.[h-1] cLog) engine
@@ -304,3 +312,65 @@ let shrubsWithIsotope = [ "YUSL03A"; "YUSL05A"; "YUSL26A"; "YUSL29A"; "YUSL39A" 
 let work = workPackages (shrubs |> Seq.where(fun s -> shrubsWithIsotope |> List.contains s.Identifier.Value)) hypotheses Options.engine Options.resultsDirectory |> Seq.toList
 let run () = work |> Seq.rev |> Seq.iter (OrchestrationMessage.StartWorkPackage >> Options.orchestrator.Post)
 
+
+// Temp
+module Temp =
+
+    open Bristlecone.Data
+
+    /// Load an `EstimationResult` that has previously been saved as
+    /// three seperate dataframes. Results will only be reconstructed
+    /// when file names and formats are in original Bristlecone format.
+    let loadAll directory subject (modelSystem:ModelSystem) modelId =
+        let mles = MLE.load directory subject modelId |> Seq.map(fun (k,v) -> k.ToString(), v)
+        let series = Series.load directory subject modelId |> Seq.map(fun (k,v) -> k.ToString(), v)
+        let traces = Trace.load directory subject modelId |> Seq.map(fun (k,v) -> k.ToString(), v)
+
+        printfn "%s %i" subject modelId
+
+        let updateParameter (k:ShortCode) v newParameters =
+            printfn "New key is %s" k.Value
+            if k = code "conductivity" then 
+                match newParameters |> Map.tryFind k with
+                | Some i -> Parameter.setEstimate v i
+                | None -> Parameter.setEstimate v (newParameters |> Map.find (code "insulation"))
+            else Parameter.setEstimate v (newParameters |> Map.find k)
+
+        mles
+        |> Seq.keyMatch series
+        |> Seq.map(fun (k,v1,v2) -> (k, (v1, v2)))
+        |> Seq.keyMatch traces
+        |> Seq.map(fun (k,t,(s,(l,p))) ->
+            { ResultId = k |> System.Guid.Parse
+              Likelihood = l
+              Parameters = modelSystem.Parameters |> Map.map(fun k v -> updateParameter k v p)
+              Series = s 
+              Trace = t })
+
+
+let saveDiagnostics () =
+
+    let resultDir = "/Users/andrewmartin/Desktop/Bristlecone Results/Paper-2-Thesis-Version/Annual-RemoteSensed/"
+
+    // 1. Get all results sliced by plant and hypothesis
+    let results = 
+        let hypotheses = hypotheses |> List.map(fun h -> h (PassThrough()))
+        let get subject model modelId = Temp.loadAll resultDir subject.Identifier.Value model modelId
+        Bristlecone.ModelSelection.ResultSet.arrangeResultSets shrubs hypotheses get
+
+    // 2. Save convergence statistics to file
+    results 
+    |> Seq.map(fun (x,a,b,c) -> x.Identifier.Value,a,b,c)
+    |> Seq.toList
+    |> Diagnostics.Convergence.gelmanRubinAll 10000 3
+    |> Data.Convergence.save Options.resultsDirectory
+
+    // 3. Save Akaike weights to file
+    results
+    |> ModelSelection.Select.weights
+    |> Seq.map(fun (x,a,b,c) -> x.Identifier.Value,a,b,c)
+    |> Data.ModelSelection.save resultDir
+
+    // 4. Save out logged components
+    // results
+    // |> Seq.map(fun r -> calculateComponents fit Options.engine r)
