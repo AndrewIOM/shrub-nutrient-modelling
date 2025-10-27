@@ -38,5 +38,5 @@ let toMetres (x: ModelExpression<cm>) = x / cmPerM
 let toGrams (x: ModelExpression<kg>) = x * gramsPerKg
 let toCentimetres (x: ModelExpression<m>) = x * cmPerM
 let mmToCm (x:ModelExpression<mm>) = x / mmPerCm
-
+let cmToMm (x:ModelExpression<cm>) = x * mmPerCm
 let toJoule (x:ModelExpression<kJ * 'u>) : ModelExpression<J * 'u> = x * joulesPerKilojoule
