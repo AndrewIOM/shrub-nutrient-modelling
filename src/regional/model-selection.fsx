@@ -12,13 +12,11 @@ for 24 shrub individuals.
 First, we must load Bristlecone:
 *)
 
-#r "nuget: Bristlecone.Dendro,2.0.0"
+#load "model/model.fsx"
 
 open Bristlecone // Opens Bristlecone core library and estimation engine
 open Bristlecone.Language // Open the language for writing Bristlecone models
 open Bristlecone.Time
-
-#load "model/model.fsx"
 
 (**
 ### Model selection
@@ -36,7 +34,7 @@ let saveDiagnostics () =
 
     // 1. Get all results sliced by plant and hypothesis
     let results =
-        let get (subject: PlantIndividual.PlantIndividual) (hypothesis: Hypotheses.Hypothesis) =
+        let get (subject: Dendro.PlantIndividual.PlantIndividual) (hypothesis: Hypotheses.Hypothesis) =
             Bristlecone.Data.EstimationResult.loadAll
                 Config.resultsDirectory
                 subject.Identifier.Value

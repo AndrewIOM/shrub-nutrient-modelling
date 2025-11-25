@@ -13,13 +13,12 @@ First, we must load Bristlecone and the seperate script that
 defines the allometric equations that we will use later.
 *)
 
-#r "nuget: Bristlecone.Dendro,2.0.0"
+#load "units.fsx"
+#load "components.fsx"
 
-open Bristlecone // Opens Bristlecone core library and estimation engine
 open Bristlecone.Language // Open the language for writing Bristlecone models
 open Bristlecone.Time
-
-#load "components.fsx"
+open Units
 
 (**
 ### Defining a 'base model'
@@ -46,36 +45,50 @@ The code for the parts of the base model is shown below.
 let ``δ15N -> N availability`` n =
     (Constant 100. * n + Constant 309.) / Constant 359.
 
+// Parameters (rates):
+let r = parameter "r" notNegative 0.500<g/1> 1.000<g/1> // gram per unit N (N is dimensionless)
+let lambda = parameter "λ" notNegative 0.001</year> 0.500</year>
+let gammaN = parameter "γ[N]" notNegative 0.001</year> 0.200</year>
+let gammaB = parameter "γ[b]" notNegative 0.001</year> 0.200</year>
+
+// States:
+let N = state     "N"
+let B = state<g> "bs"
+let SR = measure<mm> "x"
+
+// Environmental forcings
+let TMax = environment<K> "T[max]"
+
+// f(N) represents the combined effect of nitrogen uptake and conversion into plant biomass
+type NLimitation =
+  { UptakeRatePerBiomass : ModelExpression<1> -> ModelExpression<1/g/year>
+    ScalingForIntrinsicGrowthRate: ModelExpression<1>
+    UptakeMultiplier: ModelExpression<1> }
+
 /// ODE1. Cumulative stem biomass
 /// NB. A parameter constraint is added using a `Conditional` expression.
 /// NB. The parameter r is multiplied by 1000 when applying an N-limitation purely to aid model-fitting.
-let ``db/dt`` geomLimit nLimitName nLimitation environmentLimitation =
-    Conditional <| fun compute ->
-        if compute (Parameter "r") > 100000
-        then Invalid
-        else
-            This * (if nLimitName = "None" then Parameter "r" else Parameter "r" * Constant 1000.) * 
-                (nLimitation (``δ15N -> N availability`` (Environment "N"))) * (geomLimit This) * (environmentLimitation (Constant 1.))
-                - Parameter "γ[b]" * This
+let ``db/dt`` (geomLimit:ModelExpression<g> -> ModelExpression<1>) (nLimitation:NLimitation) (envLimit:ModelExpression<1>) : ModelExpression<g/year> =
+    This<g> * (P r * nLimitation.ScalingForIntrinsicGrowthRate)
+        * nLimitation.UptakeRatePerBiomass (``δ15N -> N availability`` (State N))
+        * geomLimit This<g>
+        * envLimit
+    - P gammaB * This
 
-/// ODE2. Soil nitrogen availability
-let ``dN/dt`` geomLimit feedback limitationName nLimitation environmentLimitation =
-    if limitationName = "None" then
-        Parameter "λ" - Parameter "γ[N]" * ``δ15N -> N availability`` This + feedback (Environment "bs")
-    else
-        Parameter "λ" - Parameter "γ[N]" * ``δ15N -> N availability`` This + feedback (Environment "bs")
-        - ((geomLimit (Environment "bs")) * (Environment "bs") * (nLimitation (``δ15N -> N availability`` This))
-            * (environmentLimitation (Constant 1.)))
+/// ODE2. A dimensionless state variable representing "soil nitrogen availability"
+let ``dN/dt`` (geomLimit:ModelExpression<g> -> ModelExpression<1>) nLimitation (envLimit:ModelExpression<1>) (feedback:ModelExpression<g> -> ModelExpression</year>) : ModelExpression</year> =
+    P lambda
+    - P gammaN * ``δ15N -> N availability`` This<1>
+    + feedback (State B)
+    - nLimitation.UptakeMultiplier * ((geomLimit (State B)) * (State B) * (nLimitation.UptakeRatePerBiomass (``δ15N -> N availability`` This<1>)) * (envLimit))
 
 /// Measurement variable: stem radius
-let stemRadius lastRadius lastEnv env =
-    let oldCumulativeMass = lastEnv |> lookup "bs"
-    let newCumulativeMass = env |> lookup "bs"
-
-    if (newCumulativeMass - oldCumulativeMass) > 0. then
-        newCumulativeMass |> ModelComponents.Proxies.toRadiusMM // from components.fsx file
-    else
-        lastRadius
+let stemRadius : ModelExpression<mm> =
+    let oldCumulativeMass = StateAt (-1<``time index``>, B)
+    let newCumulativeMass = StateAt (0<``time index``>, B)
+    Conditional (newCumulativeMass - oldCumulativeMass .> Constant 0.<g>)
+        (newCumulativeMass |> ShrubModel.Allometry.Proxies.toRadiusMM) // from components.fsx file
+        This
 
 (**
 Once we have defined the components, we can scaffold them into a model system.
@@ -84,18 +97,22 @@ the base model as a function that takes parameters representing the
 alternative hypotheses.
 *)
 
-let ``base model`` geometricConstraint plantSoilFeedback environmentLimit (nLimitMode, nLimitation) =
+let ``base model``
+    (geometricConstraint: ModelExpression<g> -> ModelExpression<1>)
+    (plantSoilFeedback: ModelExpression<g> -> ModelExpression</year>)
+    (envLimit: ModelExpression<1>)
+    (nLimitation: NLimitation) =
     Model.empty
-    |> Model.addEquation "bs" (``db/dt`` geometricConstraint nLimitMode nLimitation environmentLimit)
-    |> Model.addEquation "N" (``dN/dt`` geometricConstraint plantSoilFeedback nLimitMode nLimitation environmentLimit)
-    |> Model.includeMeasure "x" stemRadius
-    |> Model.estimateParameter "λ" notNegative 0.001 0.500
-    |> Model.estimateParameter "γ[N]" notNegative 0.001 0.200
-    |> Model.estimateParameter "γ[b]" notNegative 0.001 0.200
-    |> Model.useLikelihoodFunction (ModelLibrary.Likelihood.bivariateGaussian "x" "N")
-    |> Model.estimateParameter "ρ" noConstraints -0.500 0.500
-    |> Model.estimateParameter "σ[x]" notNegative 0.001 0.100
-    |> Model.estimateParameter "σ[y]" notNegative 0.001 0.100
+    |> Model.addRateEquation B (``db/dt`` geometricConstraint nLimitation envLimit)
+    |> Model.addRateEquation N (``dN/dt`` geometricConstraint nLimitation envLimit plantSoilFeedback)
+    |> Model.addMeasure SR stemRadius
+    |> Model.estimateParameter lambda
+    |> Model.estimateParameter gammaN
+    |> Model.estimateParameter gammaB
+    |> Model.useLikelihoodFunction (Bristlecone.ModelLibrary.Likelihood.bivariateGaussian (Require.measure SR) (Require.state N))
+    |> Model.estimateParameterOld "ρ" noConstraints -0.500 0.500
+    |> Model.estimateParameterOld "σ[x]" notNegative 0.001 0.100
+    |> Model.estimateParameterOld "σ[y]" notNegative 0.001 0.100
 
 (**
 ### Defining the competing hypotheses
@@ -132,12 +149,14 @@ extra parameter *K*, which represents the asymptotic biomass. These may be
 added to a `subComponent` by using `|> estimateParameter` afterwards, as below.
 *)
 
-let ``geometric constraint`` =
-    modelComponent
+let ``geometric constraint``: Components.ModelComponent<(ModelExpression<g> -> ModelExpression<1>)> =
+    let K = parameter "K" notNegative 3.00<kg> 5.00<kg> // Asymptote biomass
+    Components.modelComponent
         "Geometric constraint"
-        [ subComponent "None" (Constant 1. |> (*))
-          subComponent "Chapman-Richards" (fun mass -> Constant 1. - (mass / (Parameter "k" * Constant 1000.)))
-          |> estimateParameter "K" notNegative 3.00 5.00 ] // Asymptotic biomass (in kilograms)
+        [ Components.subComponent "None" (fun _ -> Constant 1.)
+          Components.subComponent "Chapman-Richards" (fun (mass: ModelExpression<g>) ->
+            Constant 1. - (mass / Units.toGrams (P K)))
+          |> Components.estimateParameter K ]
 
 (**
 #### Plant-soil feedback
@@ -147,18 +166,23 @@ soil available nitrogen pool. Here, we effectively turn on or off N input into
 the soil pool on biomass loss. In the base model, density-dependent biomass
 loss occurs. Turning on the feedback here creates an N input into soil based
 on the biomass lost multiplied by a conversion factor `ɑ`.
+
+The plant-soil feedback functions should require a biomass in grams, and return
+a dimensionless contribution to the N‑availability index.
 *)
 
 let ``plant-soil feedback`` =
 
-    let biomassLoss biomass =
-        (Parameter "ɑ" / Constant 100.) * biomass * Parameter "γ[b]"
+    let alpha = parameter "ɑ" notNegative 0.01</g> 1.00</g>
 
-    modelComponent
+    let biomassLoss (biomass:ModelExpression<g>) : ModelExpression</year> =
+        (P alpha / Constant 100.) * biomass * P gammaB
+
+    Components.modelComponent
         "Plant-Soil Feedback"
-        [ subComponent "None" (Constant 1. |> (*))
-          subComponent "Biomass Loss" biomassLoss
-          |> estimateParameter "ɑ" notNegative 0.01 1.00 ] // N-recycling efficiency
+        [ Components.subComponent "None" (fun _ -> Constant 0.</year>)
+          Components.subComponent "Biomass Loss" biomassLoss
+          |> Components.estimateParameter alpha ] // N-recycling efficiency
 
 (**
 #### Nitrogen limitation
@@ -181,29 +205,45 @@ parameter r (intrinsic growth rate) becomes different.
 
 let ``N-limitation to growth`` =
 
-    let hollingDiscModelDual =
-        ModelComponents.GrowthLimitation.hollingDiscModelDual
-            (Parameter "a" / Constant 1000.) // To aid model-fitting
-            (Parameter "r")
-            (Parameter "h")
-            (Constant 5.00)
+    // a = how effectively roots capture available N from the soil (1/g/year).
+    // b / r = efficiency of incorporating captured N into biomass (dimensionless or g/unit N).
+    // h = integrated handling time — the bottleneck that emerges when both processes (foraging and incorporation) are operating together (years).
+    // note: ecologically, h is the saturation effect: even if roots forage efficiently and incorporation is efficient, there’s still a finite rate at which N can be processed.
+    let a = parameter "a" notNegative 0.100</g/year> 0.400</g/year>
+    let h = parameter "h" notNegative 0.100<year> 0.400<year>
+    let rScale = Constant 1000. // Used to aid model-fitting in some cases.
+    let aScale = Constant 1. / Constant 1000. // Used to aid model-fitting in some cases.
+
+    let holling =
+
+        let hollingDiscModelDual =
+            ShrubModel.GrowthLimitation.hollingDiscModelDual
+                (P a * aScale) // To aid model-fitting
+                (P r * rScale)
+                (P h)
+                (Constant 10.00)
+
+        Components.subComponent "Saturating (Holling disc)"
+            { UptakeMultiplier = Constant 1. // Turn uptake on.
+              ScalingForIntrinsicGrowthRate = rScale
+              UptakeRatePerBiomass      = hollingDiscModelDual }
+        |> Components.estimateParameter a
+        |> Components.estimateParameter h
+        |> Components.estimateParameter r
 
     let linear =
-        ModelComponents.GrowthLimitation.linear
-            (Parameter "a" / Constant 1000.) // To aid model-fitting
-            (Constant 5.00)
+        Components.subComponent "Linear"
+            { UptakeMultiplier = Constant 1. // Turn uptake on.
+              ScalingForIntrinsicGrowthRate = rScale
+              UptakeRatePerBiomass      = ShrubModel.GrowthLimitation.linear (P a / Constant 1000.) (Constant 10.0) }
+        |> Components.estimateParameter a
 
-    modelComponent
-        "N-limitation"
-        [ subComponent "Saturating (Holling disc)" hollingDiscModelDual
-          |> estimateParameter "a" notNegative 0.100 0.400
-          |> estimateParameter "h" notNegative 0.100 0.400
-          |> estimateParameter "r" notNegative 0.500 1.000
-          subComponent "Linear" linear
-          |> estimateParameter "a" notNegative 0.100 0.400
-          |> estimateParameter "r" notNegative 0.500 1.000
-          subComponent "None" (Constant 1. |> (*))
-          |> estimateParameter "r" notNegative 0.500 1.000 ]
+    let none =
+        let r = parameter "r" notNegative 0.500 1.000
+        Components.subComponent "None" { UptakeRatePerBiomass = (fun _ -> Constant 1.</g/year>); ScalingForIntrinsicGrowthRate = Constant 1.; UptakeMultiplier = Constant 0. }
+        |> Components.estimateParameter r
+
+    Components.modelComponent "N-limitation" [ holling; linear; none ]
 
 (**
 #### Environmental limitation: temperature
@@ -215,19 +255,21 @@ the growth rate of shrubs.
 let ``temperature limitation to growth`` =
 
     /// The universal gas constant in J mol−1 K−1
-    let gasConstant = Constant 8.314
+    let gasConstant = Constant 8.314<J mol^1 K^1>
 
     /// An Arrhenius function to represent temperature limitation on growth.
     /// Form of equation from paper: https://pubag.nal.usda.gov/download/13565/PDF
-    let arrhenius activationEnergy temperature =
-        Constant System.Math.E ** ((Constant 1000. * activationEnergy * (temperature - Constant 298.)) / (Constant 298. * gasConstant * temperature))
+    let arrhenius (activationEnergy: ModelExpression<J K mol>) (temperature: ModelExpression<K>) =
+        Constant System.Math.E ** ((Constant 1000. * activationEnergy * (temperature - Constant 298.<K>)) / (Constant 298. * gasConstant * temperature))
 
-    modelComponent
+    let Ea = parameter "Ea" notNegative 10.<kJ mol^1 K^1> 30.<kJ mol^1 K^1>
+
+    Components.modelComponent
         "Temperature limiting effect on photosynthetic rate"
         [
-            subComponent "None" (Constant 1. |> (*))
-            subComponent "Arrhenius" (arrhenius (Parameter "Ea") (Environment "T[max]") |> (*))
-            |> estimateParameter "Ea" notNegative 10. 30.
+            Components.subComponent "None" (Constant 1.)
+            Components.subComponent "Arrhenius" (arrhenius (P Ea |> toJoule) (Environment TMax))
+            |> Components.estimateParameter Ea
         ]
 
 
@@ -241,8 +283,9 @@ of hypotheses, which reflect the product of all of the components.
 
 let hypotheses =
     ``base model``
-    |> Hypotheses.createFromComponent ``geometric constraint``
-    |> Hypotheses.useAnother ``plant-soil feedback``
-    |> Hypotheses.useAnother ``temperature limitation to growth``
-    |> Hypotheses.useAnotherWithName ``N-limitation to growth``
+    |> Hypotheses.createFromModel
+    |> Hypotheses.apply ``geometric constraint``
+    |> Hypotheses.apply ``plant-soil feedback``
+    |> Hypotheses.apply ``temperature limitation to growth``
+    |> Hypotheses.apply ``N-limitation to growth``
     |> Hypotheses.compile

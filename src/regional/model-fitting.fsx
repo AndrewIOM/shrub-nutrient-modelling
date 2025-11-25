@@ -17,9 +17,11 @@ of mechanisms for each shrub.
 
 First, we must load Bristlecone and the seperate script that
 defines the allometric equations that we will use later.
+We can simply load the fsx file that we previously defined the
+model system within; this contains the reference to Bristlecone.
 *)
 
-#r "nuget: Bristlecone.Dendro,2.0.0"
+#load "model/model.fsx"
 
 open Bristlecone // Opens Bristlecone core library and estimation engine
 open Bristlecone.Language // Open the language for writing Bristlecone models
@@ -28,11 +30,7 @@ open Bristlecone.Time
 (**
 ### Loading in the model
 
-We can simply load the fsx file that we previously defined the
-model system within.
 *)
-
-#load "model/model.fsx"
 
 (**
 ### Setting up a *Bristlecone engine*
@@ -44,26 +42,25 @@ Here, we scaffold an engine from `Bristlecone.mkContinuous`, as we are working
 with continuous-time models.
 *)
 
-let output = Logging.Console.logger 1000
+let output = Logging.Console.logger 1000<iteration> //Logging.ConsoleTable.logger 1000<iteration>
 
-let engine =
-    Bristlecone.mkContinuous
-    |> Bristlecone.withContinuousTime Integration.MathNet.integrate
+let engine: EstimationEngine.EstimationEngine<int<year>,year,1> =
+    Bristlecone.mkContinuous ()
+    |> Bristlecone.withContinuousTime Integration.RungeKutta.rk4
+    |> Bristlecone.withTimeConversion (fun (i: int<year>) -> float i * 1.<year>)
     |> Bristlecone.withOutput output
     |> Bristlecone.withConditioning Conditioning.RepeatFirstDataPoint
-        |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.SimulatedAnnealing.fastSimulatedAnnealing 0.01 true
-            { Optimisation.MonteCarlo.SimulatedAnnealing.AnnealSettings<float>.Default with 
-                InitialTemperature = 100.
-                TemperatureCeiling = Some 100.
-                HeatRamp = (fun t -> t + 5.00)
-                BoilingAcceptanceRate = 0.85
-                HeatStepLength = Optimisation.EndConditions.afterIteration 1000
-                TuneLength = 1000
-                AnnealStepLength =
-                    (fun x n ->
-                        (* Optimisation.MonteCarlo.SimulatedAnnealing.EndConditions.improvementCount 5000 250 x n
-                        || *) Optimisation.EndConditions.afterIteration 10000 x n) }
-        )
+        |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.SimulatedAnnealing.fastSimulatedAnnealing 0.01<``optim-space``> true
+            { HeatStepLength = Optimisation.EndConditions.atIteration 250<iteration>
+              HeatRamp = fun t -> t * 1.10
+              BoilingAcceptanceRate = 0.85
+              TemperatureCeiling = Some 200.
+              InitialTemperature = 1.00
+              PreTuneLength = 5000<iteration>
+              Tuning = { InitialScale = 0.001
+                         TuneLength = 100000<iteration>
+                         TuneN = 50<iteration> }
+              AnnealStepLength = Optimisation.EndConditions.improvementCount 250 250<iteration> })
 
 (**
 ### Read in ring width, isotope, and weather station data
@@ -75,14 +72,15 @@ method to wrangle the data into a `TimeSeries` is acceptable.
 
 open Bristlecone.Dendro
 
-let ringWitdhDataset =
-    Data.PlantIndividual.loadRingWidths (__SOURCE_DIRECTORY__ + "/../data/yamal-rw.csv")
+let ringWidthDataset =
+    Data.PlantIndividual.Csv.loadRingWidths (__SOURCE_DIRECTORY__ + "/../../data/yamal-rw.csv")
 
 (**
 #### Read in air temperature data
 *)
 
 open FSharp.Data
+open FSharp.Data.UnitSystems.SI.UnitSymbols
 
 type TemperatureData = CsvProvider<"../../data/yamal-mean-temperatures.csv">
 
@@ -90,7 +88,7 @@ let jjaTemperaturesByStation =
     let maxTemperatures = TemperatureData.Load "../../data/yamal-mean-temperatures.csv"
     maxTemperatures.Rows
     |> Seq.groupBy(fun r -> r.Station)
-    |> Seq.map(fun (station,r) -> station, r |> Seq.map(fun r -> ( float r.JJA + 273.15, System.DateTime.Create 31 12 r.Year)) |> TimeSeries.fromObservations)
+    |> Seq.map(fun (station,r) -> station, r |> Seq.map(fun r -> (float r.JJA + 273.15) * 1.<K>, DatingMethods.Annual <| r.Year * 1<year>) |> TimeSeries.fromObservations DateMode.annualDateMode)
     |> Seq.toList
 
 (**
@@ -105,36 +103,29 @@ some shrubs have higher resolution (annual) d15N data from 1980.
 type Regional15N = CsvProvider<"../../data/yamal-d15N-lowres.csv">
 type YuribeiD15N = CsvProvider<"../../data/yuribei-d15N-imputed.csv">
 
-let bins = seq { 1900 .. 3 .. 2018 }
-let regionalD15N = Regional15N.Load (__SOURCE_DIRECTORY__ + "/../data/yamal-d15N-lowres.csv")
-let yuribeiD15N = YuribeiD15N.Load (__SOURCE_DIRECTORY__ + "/../data/yuribei-d15N-imputed.csv")
+let bins = seq { 1900<year> .. 3<year> .. 2018<year> }
+let regionalD15N = Regional15N.Load (__SOURCE_DIRECTORY__ + "/../../data/yamal-d15N-lowres.csv")
+let yuribeiD15N = YuribeiD15N.Load (__SOURCE_DIRECTORY__ + "/../../data/yuribei-d15N-imputed.csv")
 
 /// Converts input data into 3-year binned d15N and increment data
-let threeYearToAnnual (plant:PlantIndividual.PlantIndividual) =
+let threeYearToAnnual (plant:PlantIndividual.PlantIndividual<Units.millimetre, DatingMethods.Annual,int<year>,int<year>>) =
 
-    let growth =
-        match plant.Growth with
-        | PlantIndividual.PlantGrowth.RingWidth x ->
-            match x with
-            | GrowthSeries.Absolute rw -> rw
-            | GrowthSeries.Cumulative(_) -> failwith "Not Implemented"
-            | GrowthSeries.Relative(_) -> failwith "Not Implemented"
-        | _ -> failwith "not implemented"
+    let growth = GrowthSeries.absolute plant.Growth
 
-    let (isotopeByBin:(int*float) list list) = 
+    let isotopeByBin : (int<year>*float) list list = 
         bins
         |> Seq.choose(fun binStart ->
             let lowResBins =
                 regionalD15N.Rows
                 |> Seq.where(fun n -> n.Shrub = plant.Identifier.Value)
-                |> Seq.where(fun n -> n.BinLatest <= (binStart + 2) && n.BinOldest >= binStart)
-                |> Seq.map(fun r -> (r.BinOldest, r.BinLatest, r.D15N))
+                |> Seq.where(fun n -> n.BinLatest * 1<year> <= (binStart + 2<year>) && n.BinOldest * 1<year> >= binStart)
+                |> Seq.map(fun r -> (r.BinOldest * 1<year>, r.BinLatest * 1<year>, r.D15N))
 
             let highResBins =
                 yuribeiD15N.Rows
                 |> Seq.where(fun n -> n.``Plant Code`` = plant.Identifier.Value)
-                |> Seq.where(fun n -> n.Date.Year <= (binStart + 2) && n.Date.Year >= binStart)
-                |> Seq.map(fun r -> (r.Date.Year, r.Date.Year, (float r.``Predictor 2``) ))
+                |> Seq.where(fun n -> n.Date.Year * 1<year> <= (binStart + 2<year>) && n.Date.Year * 1<year> >= binStart)
+                |> Seq.map(fun r -> (r.Date.Year * 1<year>, r.Date.Year * 1<year>, (float r.``Predictor 2``) ))
 
             let allData = 
                 highResBins 
@@ -149,14 +140,13 @@ let threeYearToAnnual (plant:PlantIndividual.PlantIndividual) =
                     try
                         let weightedAverage =
                             let weights = 
-                                let increments = allData |> Seq.map (fun (start,en,_) -> [ start .. en ] |> List.sumBy(fun y -> growth |> TimeSeries.findExact (System.DateTime(y, 12, 31)) |> fst |> removeUnit ))
+                                let increments = allData |> Seq.map (fun (start,en,_) -> [ start .. 1<year> .. en ] |> List.sumBy(fun y -> growth |> TimeSeries.findExact (DatingMethods.Annual y) |> fst ))
                                 let totalIncrement = increments |> Seq.sum
                                 increments |> Seq.map(fun i -> i / totalIncrement)
-                            printfn "Weights are %A" weights
                             allData
                             |> Seq.zip weights
                             |> Seq.averageBy(fun (weight,(s,e,d15n)) -> d15n * weight )
-                        Some <| ([ binStart .. binStart + 2 ] |> List.map (fun y -> y, weightedAverage))
+                        Some <| ([ binStart .. 1<year> .. binStart + 2<year> ] |> List.map (fun y -> y, weightedAverage))
                     with | _ -> None
                 | _ ->
                     highResBins 
@@ -167,15 +157,17 @@ let threeYearToAnnual (plant:PlantIndividual.PlantIndividual) =
     List.concat isotopeByBin
 
 let dataset =
-    ringWitdhDataset
-    |> Seq.map(fun plant ->
-        let isotope3Year = 
-            threeYearToAnnual plant
-            //lowerResolution plant
-            |> List.map (fun (x,y) -> (y, System.DateTime(x, 12, 31)))
-            |> TimeSeries.fromObservations
-        plant |> PlantIndividual.zipEnv "N" isotope3Year )
-
+    ringWidthDataset
+    |> Seq.choose(fun plant ->
+        let isotope3Year = threeYearToAnnual plant
+        if isotope3Year.Length = 0 then None
+        else
+            let isoTs =
+                isotope3Year
+                |> List.map (fun (x,y) -> y, DatingMethods.Annual x)
+                |> TimeSeries.fromObservations DateMode.annualDateMode
+            plant |> PlantIndividual.zipEnvironment "N" isoTs |> Some )
+    |> Seq.toList
 
 (**
 The final dataset in `dataset` includes each plant individual with
@@ -197,7 +189,7 @@ in parallel. Below, we demonstrate setting up an agent:
 
 open Bristlecone.Workflow
 
-let orchestrator =
+let orchestrator: Orchestration.OrchestrationAgent<DatingMethods.Annual,int<year>,int<year>> =
     Orchestration.OrchestrationAgent(
         writeOut = output,
         maxSimultaneous = System.Environment.ProcessorCount,
@@ -219,28 +211,24 @@ time-series but not the other. Because of this, we use a custom start
 point for each shrub individual.
 *)
 
-let startValues (startDate: System.DateTime) (plant: PlantIndividual.PlantIndividual) =
+let startValues (startDate:DatingMethods.Annual) (plant: PlantIndividual.PlantIndividual<Units.millimetre,DatingMethods.Annual,'timeunit,'timespan>) =
     let removeUnit (x: float<_>) = float x
 
     let initialRadius =
         match plant.Growth with
-        | PlantIndividual.PlantGrowth.RingWidth s ->
-            match s with
-            | GrowthSeries.Cumulative c ->
-                let trimmed = c |> TimeSeries.trimStart (startDate - System.TimeSpan.FromDays(366.))
-
-                match trimmed with
-                | Some t -> t.Values |> Seq.head
-                | None -> failwith "Could not get t0 from ring-width series"
-            | _ -> invalidOp "Not applicable"
+        | GrowthSeries.Cumulative c ->
+            let trimmed = c |> TimeSeries.trimStart (startDate.Value - 1<year> |> DatingMethods.Annual)
+            match trimmed with
+            | Some t -> t.Values |> Seq.head
+            | None -> failwith "Could not get t0 from ring-width series"
         | _ -> invalidOp "Not applicable"
 
-    let initialMass = initialRadius |> ModelComponents.Proxies.toBiomassMM
-    let initialNitrogen = plant.Environment.[(code "N").Value].Head |> fst
+    let initialMass = Constant initialRadius |> ShrubModel.Allometry.Proxies.toBiomassMM |> ExpressionCompiler.compileSimple
+    let initialNitrogen = plant.Environment.[Model.N.Code].Head |> fst
 
-    [ ((code "x").Value, initialRadius |> removeUnit)
-      ((code "N").Value, initialNitrogen)
-      ((code "bs").Value, initialMass) ]
+    [ Model.SR.Code, initialRadius |> removeUnit
+      Model.B.Code,  initialMass |> removeUnit
+      Model.N.Code,  initialNitrogen ]
     |> Map.ofList
 
 (**
@@ -254,44 +242,17 @@ start values for each shrub, then creates per-hypothesis work packages for that 
 module Config =
 
     let numberOfReplicates = 3
-    let resultsDirectory = "~/Desktop/Bristlecone Results Clean/Regional/"
+    let resultsDirectory = "~/Desktop/Bristlecone-3.0/Regional/"
     let thinTrace = Some 100
-    let endWhen = Optimisation.EndConditions.afterIteration 100000
+    let endWhen = Optimisation.EndConditions.atIteration 100000<iteration>
 
+let s = dataset.Head
+let h = Model.hypotheses.Head
 
-let enforceMinimumRadius minSize (plant:PlantIndividual.PlantIndividual) =
-    let bounded = 
-        match plant.Growth with
-        | RingWidth rw ->
-            match rw with
-            | Cumulative g -> 
-                g 
-                |> TimeSeries.toObservations 
-                |> Seq.skipWhile (fun (x,_) -> x < minSize) 
-                |> TimeSeries.fromObservations 
-                |> Cumulative
-            | _ -> invalidOp "Not implemented"
-        | _ -> invalidOp "Not implemented"
-    { plant with Growth = bounded |> RingWidth }
-
-let tailGrowth (plant:Plant.PlantIndividual) =
-    let bounded = 
-        match plant.Growth with
-        | RingWidth rw ->
-            match rw with
-            | Cumulative g -> 
-                g 
-                |> TimeSeries.toObservations 
-                |> Seq.tail
-                |> TimeSeries.fromObservations 
-                |> Cumulative
-            | _ -> invalidOp "Not implemented"
-        | _ -> invalidOp "Not implemented"
-    { plant with Growth = bounded |> RingWidth }
-
+open Constants.Allometrics
 
 // Function to scaffold work packages
-let workPackages (shrubs: PlantIndividual.PlantIndividual seq) (hypotheses: Hypotheses.Hypothesis list) engine saveDirectory =
+let workPackages (shrubs: PlantIndividual.PlantIndividual<Units.millimetre,DatingMethods.Annual, int<year>, int<year>> seq) (hypotheses: Hypotheses.Hypothesis<'timeindex> list) engine saveDirectory =
     seq {
         for s in shrubs do
 
@@ -303,15 +264,14 @@ let workPackages (shrubs: PlantIndividual.PlantIndividual seq) (hypotheses: Hypo
             // 1. Arrange the subject and settings
             let shrub = 
                 s
-                |> PlantIndividual.toCumulativeGrowth
-                |> enforceMinimumRadius 1.53<mm>
-                |> PlantIndividual.zipEnv "T[max]" (snd tMax)
+                |> PlantIndividual.enforceMinimumSize 1.53<Units.millimetre>
+                |> PlantIndividual.zipEnvironment "T[max]" (snd tMax |> TimeSeries.map(fun (v,_) -> float v))
             let common =
                 shrub 
-                |> tailGrowth
-                |> PlantIndividual.keepCommonYears
-                |> PlantIndividual.zipEnv "T[max]" (snd tMax)
-            let startDate = (common.Environment.[(code "N").Value]).StartDate |> snd
+                |> PlantIndividual.tailGrowth
+                |> PlantIndividual.commonTimeline
+                |> PlantIndividual.zipEnvironment "T[max]" (snd tMax |> TimeSeries.map(fun (v,_) -> float v))
+            let startDate = common.Environment.[(code "N").Value].StartDate |> snd
             let startConditions = startValues startDate shrub
             let e = engine |> Bristlecone.withConditioning (Conditioning.Custom startConditions)
 
@@ -322,11 +282,13 @@ let workPackages (shrubs: PlantIndividual.PlantIndividual seq) (hypotheses: Hypo
                         async {
                             // A. Compute result
                             let result =
-                                Bristlecone.tryFit e Config.endWhen (Bristlecone.fromDendro common) h.Model
+                                Bristlecone.tryFitDendro e Config.endWhen h.Model
+                                    Bristlecone.FittingMethod.CumulativeGrowth Model.SR.Code common
                             // B. Save to file
                             match result with
                             | Ok r ->
                                 Bristlecone.Data.EstimationResult.saveAll
+                                    (fun (s:DatingMethods.Annual) -> sprintf "%i" s.Value)
                                     saveDirectory
                                     s.Identifier.Value
                                     h.ReferenceCode

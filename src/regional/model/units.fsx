@@ -1,9 +1,7 @@
 module Units
 
-#r "/Users/andrewmartin/Documents/GitHub Projects/bristlecone/src/Bristlecone/bin/Debug/net5.0/Bristlecone.dll"
-#r "/Users/andrewmartin/Documents/GitHub Projects/bristlecone/src/Bristlecone.Dendro/bin/Debug/net5.0/Bristlecone.Dendro.dll"
+#r "nuget: Bristlecone.Dendro, 3.0.0-beta1"
 
-open Bristlecone
 open Bristlecone.Language
 open FSharp.Data.UnitSystems.SI
 
