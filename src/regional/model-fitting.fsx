@@ -42,25 +42,24 @@ Here, we scaffold an engine from `Bristlecone.mkContinuous`, as we are working
 with continuous-time models.
 *)
 
-let output = Logging.Console.logger 1000<iteration> //Logging.ConsoleTable.logger 1000<iteration>
+let output = Logging.Console.logger 25<iteration>
 
-let engine: EstimationEngine.EstimationEngine<int<year>,year,1> =
+let engine: EstimationEngine.EstimationEngine<DatingMethods.Annual,int<year>,year,1> =
     Bristlecone.mkContinuous ()
     |> Bristlecone.withContinuousTime Integration.RungeKutta.rk4
-    |> Bristlecone.withTimeConversion (fun (i: int<year>) -> float i * 1.<year>)
+    |> Bristlecone.withTimeConversion DateMode.Conversion.Annual.toYears
     |> Bristlecone.withOutput output
     |> Bristlecone.withConditioning Conditioning.RepeatFirstDataPoint
-        |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.SimulatedAnnealing.fastSimulatedAnnealing 0.01<``optim-space``> true
-            { HeatStepLength = Optimisation.EndConditions.atIteration 250<iteration>
-              HeatRamp = fun t -> t * 1.10
-              BoilingAcceptanceRate = 0.85
-              TemperatureCeiling = Some 200.
-              InitialTemperature = 1.00
-              PreTuneLength = 5000<iteration>
-              Tuning = { InitialScale = 0.001
-                         TuneLength = 100000<iteration>
-                         TuneN = 50<iteration> }
-              AnnealStepLength = Optimisation.EndConditions.improvementCount 250 250<iteration> })
+    |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.SimulatedAnnealing.fastSimulatedAnnealing 0.01<``optim-space``> false
+                { HeatStepLength = Optimisation.EndConditions.Profiles.SimulatedAnnealing.heating
+                  HeatRamp = fun t -> t * 1.10
+                  BoilingAcceptanceRate = 0.85
+                  TemperatureCeiling = Some 200.
+                  TemperatureFloor = Some 0.75
+                  InitialTemperature = 1.00
+                  PreTuneEnd = Optimisation.EndConditions.Profiles.SimulatedAnnealing.preTuning
+                  Tuning = { MinTuneLength = 300<iteration>; MaxTuneLength = 10000<iteration>; RequiredStableCount = Some 5; TuneN = 20<iteration> }
+                  AnnealStepEnd = Optimisation.EndConditions.Profiles.SimulatedAnnealing.annealing })
 
 (**
 ### Read in ring width, isotope, and weather station data
@@ -166,7 +165,7 @@ let dataset =
                 isotope3Year
                 |> List.map (fun (x,y) -> y, DatingMethods.Annual x)
                 |> TimeSeries.fromObservations DateMode.annualDateMode
-            plant |> PlantIndividual.zipEnvironment "N" isoTs |> Some )
+            plant |> PlantIndividual.zipEnvironment Model.N isoTs |> Some )
     |> Seq.toList
 
 (**
@@ -265,12 +264,12 @@ let workPackages (shrubs: PlantIndividual.PlantIndividual<Units.millimetre,Datin
             let shrub = 
                 s
                 |> PlantIndividual.enforceMinimumSize 1.53<Units.millimetre>
-                |> PlantIndividual.zipEnvironment "T[max]" (snd tMax |> TimeSeries.map(fun (v,_) -> float v))
+                |> PlantIndividual.zipEnvironment Model.TMax (snd tMax |> TimeSeries.map(fun (v,_) -> v))
             let common =
                 shrub 
                 |> PlantIndividual.tailGrowth
                 |> PlantIndividual.commonTimeline
-                |> PlantIndividual.zipEnvironment "T[max]" (snd tMax |> TimeSeries.map(fun (v,_) -> float v))
+                |> PlantIndividual.zipEnvironment Model.TMax (snd tMax |> TimeSeries.map(fun (v,_) -> v))
             let startDate = common.Environment.[(code "N").Value].StartDate |> snd
             let startConditions = startValues startDate shrub
             let e = engine |> Bristlecone.withConditioning (Conditioning.Custom startConditions)
@@ -304,3 +303,5 @@ let work = workPackages dataset Model.hypotheses engine Config.resultsDirectory
 
 work
 |> Seq.iter (Orchestration.OrchestrationMessage.StartWorkPackage >> orchestrator.Post)
+
+System.Console.ReadLine()

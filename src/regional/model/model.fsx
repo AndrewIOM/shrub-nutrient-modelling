@@ -46,10 +46,10 @@ let ``δ15N -> N availability`` n =
     (Constant 100. * n + Constant 309.) / Constant 359.
 
 // Parameters (rates):
-let r = parameter "r" notNegative 0.500<g/1> 1.000<g/1> // gram per unit N (N is dimensionless)
-let lambda = parameter "λ" notNegative 0.001</year> 0.500</year>
-let gammaN = parameter "γ[N]" notNegative 0.001</year> 0.200</year>
-let gammaB = parameter "γ[b]" notNegative 0.001</year> 0.200</year>
+let r = parameter "r" Positive 0.500<g/1> 1.000<g/1> // gram per unit N (N is dimensionless)
+let lambda = parameter "λ" Positive 0.001</year> 0.500</year>
+let gammaN = parameter "γ[N]" Positive 0.001</year> 0.200</year>
+let gammaB = parameter "γ[b]" Positive 0.001</year> 0.200</year>
 
 // States:
 let N = state     "N"
@@ -86,9 +86,10 @@ let ``dN/dt`` (geomLimit:ModelExpression<g> -> ModelExpression<1>) nLimitation (
 let stemRadius : ModelExpression<mm> =
     let oldCumulativeMass = StateAt (-1<``time index``>, B)
     let newCumulativeMass = StateAt (0<``time index``>, B)
-    Conditional (newCumulativeMass - oldCumulativeMass .> Constant 0.<g>)
+    let change = newCumulativeMass - oldCumulativeMass
+    Conditional (change .> Constant 0.<g>) //(newCumulativeMass - oldCumulativeMass .> Constant 0.<g>)
         (newCumulativeMass |> ShrubModel.Allometry.Proxies.toRadiusMM) // from components.fsx file
-        This
+        This // last state for this measure
 
 (**
 Once we have defined the components, we can scaffold them into a model system.
@@ -96,6 +97,12 @@ We can plug in the nestable hypotheses (defined further below) by defining
 the base model as a function that takes parameters representing the
 alternative hypotheses.
 *)
+
+let ρ = parameter "ρ" NoConstraints -0.500 0.500
+let σSR = parameter "σ_SR" Positive 0.001<mm> 0.100<mm>
+let σN = parameter "σ_N" Positive 0.001 0.100
+
+let NLL = Bristlecone.ModelLibrary.NegLogLikelihood.BivariateNormal (Require.measure SR) (Require.state N) σSR σN ρ
 
 let ``base model``
     (geometricConstraint: ModelExpression<g> -> ModelExpression<1>)
@@ -109,10 +116,8 @@ let ``base model``
     |> Model.estimateParameter lambda
     |> Model.estimateParameter gammaN
     |> Model.estimateParameter gammaB
-    |> Model.useLikelihoodFunction (Bristlecone.ModelLibrary.Likelihood.bivariateGaussian (Require.measure SR) (Require.state N))
-    |> Model.estimateParameterOld "ρ" noConstraints -0.500 0.500
-    |> Model.estimateParameterOld "σ[x]" notNegative 0.001 0.100
-    |> Model.estimateParameterOld "σ[y]" notNegative 0.001 0.100
+    |> Model.useLikelihoodFunction NLL
+
 
 (**
 ### Defining the competing hypotheses
@@ -150,7 +155,7 @@ added to a `subComponent` by using `|> estimateParameter` afterwards, as below.
 *)
 
 let ``geometric constraint``: Components.ModelComponent<(ModelExpression<g> -> ModelExpression<1>)> =
-    let K = parameter "K" notNegative 3.00<kg> 5.00<kg> // Asymptote biomass
+    let K = parameter "K" Positive 3.00<kg> 5.00<kg> // Asymptote biomass
     Components.modelComponent
         "Geometric constraint"
         [ Components.subComponent "None" (fun _ -> Constant 1.)
@@ -173,7 +178,7 @@ a dimensionless contribution to the N‑availability index.
 
 let ``plant-soil feedback`` =
 
-    let alpha = parameter "ɑ" notNegative 0.01</g> 1.00</g>
+    let alpha = parameter "ɑ" Positive 0.01</g> 1.00</g>
 
     let biomassLoss (biomass:ModelExpression<g>) : ModelExpression</year> =
         (P alpha / Constant 100.) * biomass * P gammaB
@@ -209,8 +214,8 @@ let ``N-limitation to growth`` =
     // b / r = efficiency of incorporating captured N into biomass (dimensionless or g/unit N).
     // h = integrated handling time — the bottleneck that emerges when both processes (foraging and incorporation) are operating together (years).
     // note: ecologically, h is the saturation effect: even if roots forage efficiently and incorporation is efficient, there’s still a finite rate at which N can be processed.
-    let a = parameter "a" notNegative 0.100</g/year> 0.400</g/year>
-    let h = parameter "h" notNegative 0.100<year> 0.400<year>
+    let a = parameter "a" Positive 0.100</g/year> 0.400</g/year>
+    let h = parameter "h" Positive 0.100<year> 0.400<year>
     let rScale = Constant 1000. // Used to aid model-fitting in some cases.
     let aScale = Constant 1. / Constant 1000. // Used to aid model-fitting in some cases.
 
@@ -239,7 +244,7 @@ let ``N-limitation to growth`` =
         |> Components.estimateParameter a
 
     let none =
-        let r = parameter "r" notNegative 0.500 1.000
+        let r = parameter "r" Positive 0.500 1.000
         Components.subComponent "None" { UptakeRatePerBiomass = (fun _ -> Constant 1.</g/year>); ScalingForIntrinsicGrowthRate = Constant 1.; UptakeMultiplier = Constant 0. }
         |> Components.estimateParameter r
 
@@ -262,7 +267,7 @@ let ``temperature limitation to growth`` =
     let arrhenius (activationEnergy: ModelExpression<J K mol>) (temperature: ModelExpression<K>) =
         Constant System.Math.E ** ((Constant 1000. * activationEnergy * (temperature - Constant 298.<K>)) / (Constant 298. * gasConstant * temperature))
 
-    let Ea = parameter "Ea" notNegative 10.<kJ mol^1 K^1> 30.<kJ mol^1 K^1>
+    let Ea = parameter "Ea" Positive 10.<kJ mol^1 K^1> 30.<kJ mol^1 K^1>
 
     Components.modelComponent
         "Temperature limiting effect on photosynthetic rate"
