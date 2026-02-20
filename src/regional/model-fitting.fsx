@@ -50,16 +50,7 @@ let engine: EstimationEngine.EstimationEngine<DatingMethods.Annual,int<year>,yea
     |> Bristlecone.withTimeConversion DateMode.Conversion.Annual.toYears
     |> Bristlecone.withOutput output
     |> Bristlecone.withConditioning Conditioning.RepeatFirstDataPoint
-    |> Bristlecone.withCustomOptimisation (Optimisation.MonteCarlo.SimulatedAnnealing.fastSimulatedAnnealing 0.01<``optim-space``> false
-                { HeatStepLength = Optimisation.EndConditions.Profiles.SimulatedAnnealing.heating
-                  HeatRamp = fun t -> t * 1.10
-                  BoilingAcceptanceRate = 0.85
-                  TemperatureCeiling = Some 200.
-                  TemperatureFloor = Some 0.75
-                  InitialTemperature = 1.00
-                  PreTuneEnd = Optimisation.EndConditions.Profiles.SimulatedAnnealing.preTuning
-                  Tuning = { MinTuneLength = 300<iteration>; MaxTuneLength = 10000<iteration>; RequiredStableCount = Some 5; TuneN = 20<iteration> }
-                  AnnealStepEnd = Optimisation.EndConditions.Profiles.SimulatedAnnealing.annealing })
+    |> Bristlecone.withBristleconeOptimiser
 
 (**
 ### Read in ring width, isotope, and weather station data
@@ -240,15 +231,11 @@ start values for each shrub, then creates per-hypothesis work packages for that 
 
 module Config =
 
-    let numberOfReplicates = 3
-    let resultsDirectory = "~/Desktop/Bristlecone-3.0/Regional/"
-    let thinTrace = Some 100
-    let endWhen = Optimisation.EndConditions.atIteration 100000<iteration>
+    let numberOfReplicates = 1
+    let resultsDirectory = "/Users/andrewmartin/Desktop/Bristlecone-3.0/Regional/"
+    let thinTrace = Some 50
+    let endWhen = Optimisation.EndConditions.Profiles.mcmc 100<iteration> engine.LogTo
 
-let s = dataset.Head
-let h = Model.hypotheses.Head
-
-open Constants.Allometrics
 
 // Function to scaffold work packages
 let workPackages (shrubs: PlantIndividual.PlantIndividual<Units.millimetre,DatingMethods.Annual, int<year>, int<year>> seq) (hypotheses: Hypotheses.Hypothesis<'timeindex> list) engine saveDirectory =
@@ -283,6 +270,7 @@ let workPackages (shrubs: PlantIndividual.PlantIndividual<Units.millimetre,Datin
                             let result =
                                 Bristlecone.tryFitDendro e Config.endWhen h.Model
                                     Bristlecone.FittingMethod.CumulativeGrowth Model.SR.Code common
+                            
                             // B. Save to file
                             match result with
                             | Ok r ->

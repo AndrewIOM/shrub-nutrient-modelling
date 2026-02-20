@@ -116,7 +116,7 @@ module Allometry =
                     x
                     |> NiklasAndSpatz.stemLength k5 k6
                     |> Gotmark2016.shrubVolume b a rtip p lmin k5 k6 n
-                Inverse (fun x -> v x) volume (c 0.01<cm>) (c 50.0<cm>)
+                Inverse (fun x -> v x) volume (c 0.01<cm>) (c 20.0<cm>)
 
             mass |> massToVolume woodDensity |> findRadius
  
@@ -143,24 +143,36 @@ module Allometry =
 
         /// Biomass in grams.
         let toRadiusMM (biomassGrams: ModelExpression<g>) : ModelExpression<mm> =
-            Conditional (Bool.isFinite biomassGrams)
-                (
-                    biomassGrams
-                    |> Allometrics.shrubRadius
-                        Constants.Allometrics.b
-                        Constants.Allometrics.a
-                        Constants.Allometrics.rtip
-                        Constants.Allometrics.p
-                        Constants.Allometrics.lmin
-                        Constants.Allometrics.k5
-                        Constants.Allometrics.k6
-                        Constants.Allometrics.numberOfStems
-                        Constants.Allometrics.salixWoodDensity
-                    |> Units.cmToMm
-                ) Invalid
+            biomassGrams
+            |> Allometrics.shrubRadius
+                Constants.Allometrics.b
+                Constants.Allometrics.a
+                Constants.Allometrics.rtip
+                Constants.Allometrics.p
+                Constants.Allometrics.lmin
+                Constants.Allometrics.k5
+                Constants.Allometrics.k6
+                Constants.Allometrics.numberOfStems
+                Constants.Allometrics.salixWoodDensity
+            |> Units.cmToMm
 
 
 module GrowthLimitation =
+
+    // N availability range of our data is approx. -0.10 to 1.72
+    let nMin, nMax = Constant -0.10, Constant 1.72
+    
+    /// Returns a penalty if the function is flat over the realistic range.
+    let tooFlatPenalty uptakeMax uptakeMin =
+        Conditional (uptakeMax - uptakeMin .< Constant 1e-6</g/year>)
+            Invalid
+            (Constant 0.</g/year>)
+
+    /// Returns a penalty if the function is saturated over the realistic range.
+    let tooSaturatedPenalty uptakeMax uptakeMin =
+        Conditional ((uptakeMax / uptakeMin) .> Constant 50.0)
+            Invalid
+            (Constant 0.</g/year>)    
 
     /// <summary>A function that represents the efficiency of two simultaneous
     /// processes. The combined processes have a single 'handling time',
@@ -168,16 +180,16 @@ module GrowthLimitation =
     /// <param name="a">efficiency of process A</param>
     /// <param name="b">efficiency of process B</param>
     /// <param name="h">integrated handling time / rate of process A+B (per item)</param>
-    /// <param name="min">a level of resource at which the resultant process is `> 1e-12`</param>
-    let hollingDiscModelDual (a:ModelExpression<1/g/year>) (b:ModelExpression<g/1>) (h: ModelExpression<year>) min : ModelExpression<1> -> ModelExpression</g/year> =
+    let hollingDiscModelDual (a:ModelExpression<1/g/year>) (b:ModelExpression<g/1>) (h: ModelExpression<year>) : ModelExpression<1> -> ModelExpression</g/year> =
         let model r : ModelExpression</g/year> = (a * r) / (Constant 1. + (a * b * h * r))
+        let uptakeMax, uptakeMin = model nMax, model nMin
         fun resource ->
-            Conditional (model min .< Constant 1e-12</g/year>) Invalid (model resource)
+            model resource + tooSaturatedPenalty uptakeMax uptakeMin + tooFlatPenalty uptakeMax uptakeMin
 
     /// Monod model once saturation has been reached
-    let linear (a:ModelExpression</g/year>) min =
+    let linear (a:ModelExpression</g/year>) =
         fun (resource: ModelExpression<1>) ->
-            Conditional (a * min .< Constant 1e-12</g/year>) Invalid (a * resource)
+            Conditional (a * nMax .< Constant 1e-12</g/year>) Invalid (a * resource)
 
     /// <summary>A monotonically increasing function of a resource `r`.</summary>
     ///  <param name="h">soil resource concentration required for growth at half the maximum rate</param>

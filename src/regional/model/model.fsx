@@ -46,10 +46,10 @@ let ``δ15N -> N availability`` n =
     (Constant 100. * n + Constant 309.) / Constant 359.
 
 // Parameters (rates):
-let r = parameter "r" Positive 0.500<g/1> 1.000<g/1> // gram per unit N (N is dimensionless)
-let lambda = parameter "λ" Positive 0.001</year> 0.500</year>
-let gammaN = parameter "γ[N]" Positive 0.001</year> 0.200</year>
-let gammaB = parameter "γ[b]" Positive 0.001</year> 0.200</year>
+let r = parameter "r" Positive 1e3<g/1> 1e4<g/1> // gram per unit N (N is dimensionless)
+let lambda = parameter "λ" Positive 0.100</year> 2.000</year>
+let gammaN = parameter "γ[N]" Positive 0.100</year> 10.00</year>
+let gammaB = parameter "γ[b]" Positive 0.001</year> 1.000</year>
 
 // States:
 let N = state     "N"
@@ -62,14 +62,13 @@ let TMax = environment<K> "T[max]"
 // f(N) represents the combined effect of nitrogen uptake and conversion into plant biomass
 type NLimitation =
   { UptakeRatePerBiomass : ModelExpression<1> -> ModelExpression<1/g/year>
-    ScalingForIntrinsicGrowthRate: ModelExpression<1>
     UptakeMultiplier: ModelExpression<1> }
 
 /// ODE1. Cumulative stem biomass
 /// NB. A parameter constraint is added using a `Conditional` expression.
 /// NB. The parameter r is multiplied by 1000 when applying an N-limitation purely to aid model-fitting.
 let ``db/dt`` (geomLimit:ModelExpression<g> -> ModelExpression<1>) (nLimitation:NLimitation) (envLimit:ModelExpression<1>) : ModelExpression<g/year> =
-    This<g> * (P r * nLimitation.ScalingForIntrinsicGrowthRate)
+    This<g> * P r
         * nLimitation.UptakeRatePerBiomass (``δ15N -> N availability`` (State N))
         * geomLimit This<g>
         * envLimit
@@ -86,10 +85,9 @@ let ``dN/dt`` (geomLimit:ModelExpression<g> -> ModelExpression<1>) nLimitation (
 let stemRadius : ModelExpression<mm> =
     let oldCumulativeMass = StateAt (-1<``time index``>, B)
     let newCumulativeMass = StateAt (0<``time index``>, B)
-    let change = newCumulativeMass - oldCumulativeMass
-    Conditional (change .> Constant 0.<g>) //(newCumulativeMass - oldCumulativeMass .> Constant 0.<g>)
-        (newCumulativeMass |> ShrubModel.Allometry.Proxies.toRadiusMM) // from components.fsx file
-        This // last state for this measure
+    Conditional (newCumulativeMass - oldCumulativeMass .> Constant 0.<g>)
+        (newCumulativeMass |> ShrubModel.Allometry.Proxies.toRadiusMM)
+        This
 
 (**
 Once we have defined the components, we can scaffold them into a model system.
@@ -204,8 +202,9 @@ to be conditional on the state of parameters or values. In this example,
 we use it to restrict the models such that the N-limiting effect cannot
 be zero.
 
-Note: when using the saturating (holling disc) model, the scale of the
-parameter r (intrinsic growth rate) becomes different.
+Note: in the saturating (Holling) model, r appears both in the uptake
+function and in biomass growth, so the model is more sensitive to r
+than in the linear or N-independent cases.
 *)
 
 let ``N-limitation to growth`` =
@@ -214,23 +213,20 @@ let ``N-limitation to growth`` =
     // b / r = efficiency of incorporating captured N into biomass (dimensionless or g/unit N).
     // h = integrated handling time — the bottleneck that emerges when both processes (foraging and incorporation) are operating together (years).
     // note: ecologically, h is the saturation effect: even if roots forage efficiently and incorporation is efficient, there’s still a finite rate at which N can be processed.
-    let a = parameter "a" Positive 0.100</g/year> 0.400</g/year>
-    let h = parameter "h" Positive 0.100<year> 0.400<year>
-    let rScale = Constant 1000. // Used to aid model-fitting in some cases.
-    let aScale = Constant 1. / Constant 1000. // Used to aid model-fitting in some cases.
+    let a = parameter "a" Positive 1e-4</g/year> 5e-3</g/year>
+    let h = parameter "h" Positive 1e-3<year> 0.250<year>
+    let rIndependent = parameter "r" Positive 0.10<g/1> 10.00<g/1> // gram per unit N (N is dimensionless)
 
     let holling =
 
         let hollingDiscModelDual =
             ShrubModel.GrowthLimitation.hollingDiscModelDual
-                (P a * aScale) // To aid model-fitting
-                (P r * rScale)
+                (P a)
+                (P r)
                 (P h)
-                (Constant 10.00)
 
         Components.subComponent "Saturating (Holling disc)"
             { UptakeMultiplier = Constant 1. // Turn uptake on.
-              ScalingForIntrinsicGrowthRate = rScale
               UptakeRatePerBiomass      = hollingDiscModelDual }
         |> Components.estimateParameter a
         |> Components.estimateParameter h
@@ -239,14 +235,13 @@ let ``N-limitation to growth`` =
     let linear =
         Components.subComponent "Linear"
             { UptakeMultiplier = Constant 1. // Turn uptake on.
-              ScalingForIntrinsicGrowthRate = rScale
-              UptakeRatePerBiomass      = ShrubModel.GrowthLimitation.linear (P a / Constant 1000.) (Constant 10.0) }
+              UptakeRatePerBiomass      = ShrubModel.GrowthLimitation.linear (P a) }
         |> Components.estimateParameter a
+        |> Components.estimateParameter r
 
     let none =
-        let r = parameter "r" Positive 0.500 1.000
-        Components.subComponent "None" { UptakeRatePerBiomass = (fun _ -> Constant 1.</g/year>); ScalingForIntrinsicGrowthRate = Constant 1.; UptakeMultiplier = Constant 0. }
-        |> Components.estimateParameter r
+        Components.subComponent "None" { UptakeRatePerBiomass = (fun _ -> Constant 1.</g/year>); UptakeMultiplier = Constant 0. }
+        |> Components.estimateParameter rIndependent
 
     Components.modelComponent "N-limitation" [ holling; linear; none ]
 
@@ -265,7 +260,7 @@ let ``temperature limitation to growth`` =
     /// An Arrhenius function to represent temperature limitation on growth.
     /// Form of equation from paper: https://pubag.nal.usda.gov/download/13565/PDF
     let arrhenius (activationEnergy: ModelExpression<J K mol>) (temperature: ModelExpression<K>) =
-        Constant System.Math.E ** ((Constant 1000. * activationEnergy * (temperature - Constant 298.<K>)) / (Constant 298. * gasConstant * temperature))
+        Constant System.Math.E ** ((activationEnergy * (temperature - Constant 298.<K>)) / (Constant 298. * gasConstant * temperature))
 
     let Ea = parameter "Ea" Positive 10.<kJ mol^1 K^1> 30.<kJ mol^1 K^1>
 

@@ -1,6 +1,20 @@
 module Units
 
-#r "nuget: Bristlecone.Dendro, 3.0.0-beta1"
+// #r "nuget: Bristlecone.Dendro, 3.0.0-beta1"
+#r "/Users/andrewmartin/Documents/GitHub Projects/bristlecone/src/Bristlecone.Dendro/bin/Debug/net10.0/Bristlecone.dll"
+#r "/Users/andrewmartin/Documents/GitHub Projects/bristlecone/src/Bristlecone.Dendro/bin/Debug/net10.0/Bristlecone.Dendro.dll"
+// #r "nuget: DiffSharp-cpu, v=1.0.7"
+#r "nuget: FSharp.Data"
+#r "nuget: MathNet.Numerics, v=5.0.0"
+
+// Use a local fork of DiffSharp
+#I "../../../lib"
+#r "DiffSharp.Core.dll"
+#r "DiffSharp.Backends.Reference.dll"
+
+open DiffSharp
+
+// dsharp.config(backend=Backend.Torch, device=Device.CPU)
 
 open Bristlecone.Language
 open FSharp.Data.UnitSystems.SI
