@@ -116,7 +116,7 @@ module Allometry =
                     x
                     |> NiklasAndSpatz.stemLength k5 k6
                     |> Gotmark2016.shrubVolume b a rtip p lmin k5 k6 n
-                Inverse (fun x -> v x) volume (c 0.01<cm>) (c 20.0<cm>)
+                Inverse (fun x -> v x) volume (c 0.01<cm>) (c 25.0<cm>)
 
             mass |> massToVolume woodDensity |> findRadius
  

@@ -1,6 +1,6 @@
 module Units
 
-// #r "nuget: Bristlecone.Dendro, 3.0.0-beta1"
+// #r "nuget: Bristlecone.Dendro, 3.0.0"
 #r "/Users/andrewmartin/Documents/GitHub Projects/bristlecone/src/Bristlecone.Dendro/bin/Debug/net10.0/Bristlecone.dll"
 #r "/Users/andrewmartin/Documents/GitHub Projects/bristlecone/src/Bristlecone.Dendro/bin/Debug/net10.0/Bristlecone.Dendro.dll"
 // #r "nuget: DiffSharp-cpu, v=1.0.7"

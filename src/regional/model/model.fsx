@@ -47,8 +47,8 @@ let ``δ15N -> N availability`` n =
 
 // Parameters (rates):
 let r = parameter "r" Positive 1e3<g/1> 1e4<g/1> // gram per unit N (N is dimensionless)
-let lambda = parameter "λ" Positive 0.100</year> 2.000</year>
-let gammaN = parameter "γ[N]" Positive 0.100</year> 10.00</year>
+let lambda = parameter "λ" (Bounded 1e-12</year> 50.</year>) 0.100</year> 2.000</year>
+let gammaN = parameter "γ[N]" (Bounded 1e-12</year> 10.</year>) 0.100</year> 10.00</year>
 let gammaB = parameter "γ[b]" Positive 0.001</year> 1.000</year>
 
 // States:
@@ -153,7 +153,7 @@ added to a `subComponent` by using `|> estimateParameter` afterwards, as below.
 *)
 
 let ``geometric constraint``: Components.ModelComponent<(ModelExpression<g> -> ModelExpression<1>)> =
-    let K = parameter "K" Positive 3.00<kg> 5.00<kg> // Asymptote biomass
+    let K = parameter "K" (Bounded 1e-12<kg> 100.<kg>) 3.00<kg> 5.00<kg> // Asymptote biomass
     Components.modelComponent
         "Geometric constraint"
         [ Components.subComponent "None" (fun _ -> Constant 1.)
@@ -262,7 +262,7 @@ let ``temperature limitation to growth`` =
     let arrhenius (activationEnergy: ModelExpression<J K mol>) (temperature: ModelExpression<K>) =
         Constant System.Math.E ** ((activationEnergy * (temperature - Constant 298.<K>)) / (Constant 298. * gasConstant * temperature))
 
-    let Ea = parameter "Ea" Positive 10.<kJ mol^1 K^1> 30.<kJ mol^1 K^1>
+    let Ea = parameter "Ea" (Bounded 1e-12<kJ mol^1 K^1> 150.<kJ mol^1 K^1>) 10.<kJ mol^1 K^1> 30.<kJ mol^1 K^1>
 
     Components.modelComponent
         "Temperature limiting effect on photosynthetic rate"

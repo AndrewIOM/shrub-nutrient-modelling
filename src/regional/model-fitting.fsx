@@ -281,7 +281,8 @@ let workPackages (shrubs: PlantIndividual.PlantIndividual<Units.millimetre,Datin
                                     h.ReferenceCode
                                     Config.thinTrace
                                     r
-
+                                System.Threading.Thread.Sleep(System.TimeSpan.FromMinutes 1.)
+                                printfn "Saved results for %s (%s)" s.Identifier.Value h.ReferenceCode
                                 return r
                             | Error e -> return failwithf "Error in package: %s" e
                         }
