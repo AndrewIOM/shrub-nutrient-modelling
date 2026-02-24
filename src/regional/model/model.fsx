@@ -101,8 +101,8 @@ alternative hypotheses.
 *)
 
 let ρ = parameter "ρ" NoConstraints -0.500 0.500
-let σSR = parameter "σ_SR" (Bounded 1e-12<mm> 100.<mm>) 0.001<mm> 0.100<mm>
-let σN = parameter "σ_N" (Bounded 1e-12 100.) 0.001 0.100
+let σSR = parameter "σ_SR" (Bounded 1e-12<mm> 5.<mm>) 0.001<mm> 0.100<mm>
+let σN = parameter "σ_N" (Bounded 1e-12 3.) 0.001 0.100
 
 let NLL = Bristlecone.ModelLibrary.NegLogLikelihood.BivariateNormal (Require.measure SR) (Require.state N) σSR σN ρ
 

@@ -235,39 +235,46 @@ module Config =
     let endWhen = Optimisation.EndConditions.Profiles.mcmc 100<iteration> engine.LogTo
 
 
+/// Organise per-shrub data:
+/// * Attach closest weather station data
+/// * Limit analysis to > 1.53mm size.
+/// * Add conditioning (t0) point from real previous-year data where available.
+let preTransform (s: PlantIndividual.PlantIndividual<Units.millimetre,DatingMethods.Annual,int<year>,int<year>>) =
+    let tMax = 
+        if s.Identifier.Value.Contains "S8"
+        then jjaTemperaturesByStation |> Seq.find(fun (s,_) -> s = "Marre Sale") // A Varandei shrub
+        else jjaTemperaturesByStation |> Seq.find(fun (s,_) -> s = "Hoseda Hard") // A Yamal shrub
+
+    // 1. Arrange the subject and settings
+    let shrub = 
+        s
+        |> PlantIndividual.enforceMinimumSize 1.53<Units.millimetre>
+        |> PlantIndividual.zipEnvironment Model.TMax (snd tMax |> TimeSeries.map(fun (v,_) -> v))
+    let common =
+        shrub 
+        |> PlantIndividual.tailGrowth
+        |> PlantIndividual.commonTimeline
+        |> PlantIndividual.zipEnvironment Model.TMax (snd tMax |> TimeSeries.map(fun (v,_) -> v))
+    let startDate = common.Environment.[(code "N").Value].StartDate |> snd
+    let startConditions = startValues startDate shrub
+    let e = engine |> Bristlecone.withConditioning (Conditioning.Custom startConditions)
+
+    {| ShrubCommon = common; Engine = e |}
+
+
 // Function to scaffold work packages
-let workPackages (shrubs: PlantIndividual.PlantIndividual<Units.millimetre,DatingMethods.Annual, int<year>, int<year>> seq) (hypotheses: Hypotheses.Hypothesis<'timeindex> list) engine saveDirectory =
+let workPackages (shrubs: PlantIndividual.PlantIndividual<Units.millimetre,DatingMethods.Annual, int<year>, int<year>> seq) (hypotheses: Hypotheses.Hypothesis<year> list) engine saveDirectory =
     seq {
         for s in shrubs do
-
-            let tMax = 
-                if s.Identifier.Value.Contains "S8"
-                then jjaTemperaturesByStation |> Seq.find(fun (s,_) -> s = "Marre Sale") // A Varandei shrub
-                else jjaTemperaturesByStation |> Seq.find(fun (s,_) -> s = "Hoseda Hard") // A Yamal shrub
-
-            // 1. Arrange the subject and settings
-            let shrub = 
-                s
-                |> PlantIndividual.enforceMinimumSize 1.53<Units.millimetre>
-                |> PlantIndividual.zipEnvironment Model.TMax (snd tMax |> TimeSeries.map(fun (v,_) -> v))
-            let common =
-                shrub 
-                |> PlantIndividual.tailGrowth
-                |> PlantIndividual.commonTimeline
-                |> PlantIndividual.zipEnvironment Model.TMax (snd tMax |> TimeSeries.map(fun (v,_) -> v))
-            let startDate = common.Environment.[(code "N").Value].StartDate |> snd
-            let startConditions = startValues startDate shrub
-            let e = engine |> Bristlecone.withConditioning (Conditioning.Custom startConditions)
-
-            // 2. Setup batches of dependent analyses
+            let prepared = preTransform s
             for h in hypotheses do
                 for _ in [ 1 .. Config.numberOfReplicates ] do
                     yield
                         async {
                             // A. Compute result
                             let result =
-                                Bristlecone.tryFitDendro e Config.endWhen h.Model
-                                    Bristlecone.FittingMethod.CumulativeGrowth Model.SR.Code common
+                                Bristlecone.tryFitDendro prepared.Engine Config.endWhen h.Model
+                                    Bristlecone.FittingMethod.CumulativeGrowth Model.SR.Code prepared.ShrubCommon
                             
                             // B. Save to file
                             match result with
@@ -287,9 +294,3 @@ let workPackages (shrubs: PlantIndividual.PlantIndividual<Units.millimetre,Datin
     }
 
 let work = workPackages dataset Model.hypotheses engine Config.resultsDirectory
-
-work
-|> Seq.rev
-|> Seq.iter (Orchestration.OrchestrationMessage.StartWorkPackage >> orchestrator.Post)
-
-System.Console.ReadLine()
