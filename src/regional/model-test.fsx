@@ -30,7 +30,7 @@ let engine: EstimationEngine.EstimationEngine<DatingMethods.Annual,int<year>,yea
     |> Bristlecone.withContinuousTime Integration.RungeKutta.rk4
     |> Bristlecone.withTimeConversion DateMode.Conversion.Annual.toYears
     |> Bristlecone.withOutput Settings.output
-    |> Bristlecone.withConditioning Conditioning.RepeatFirstDataPoint
+    |> Bristlecone.withConditioning Conditioning.NoConditioning
     |> Bristlecone.withBristleconeOptimiser
 
 (**
@@ -49,22 +49,21 @@ let mkTemperature =
         Test.Synthetic.ar1 phi sigma engine.Random
         |> Seq.map (fun a -> meanT + a)
         |> Seq.cache
-    fun (t: float<year>) ->
-        let i = t |> int
+    fun (t: DatingMethods.Annual) ->
+        let i = t.Value |> int
         series |> Seq.item i |> Dendro.Units.celsiusToKelvin
 
 let testSettings =
     Test.annualSettings
     |> Test.seriesLength 30
     |> Test.t1 (Require.measure Model.SR) 5.0<Units.mm>
-    |> Test.t1 (Require.state Model.B) testStartBiomass
     |> Test.t1 (Require.state Model.N) testStartN
     |> Test.rule (Require.state Model.N) (Test.GenerationRules.between -3 20.)
     |> Test.rule (Require.state Model.B) (Test.GenerationRules.alwaysMoreThan (float testStartBiomass - 0.01)) // TODO Units fix in Bristlecone.
     |> Test.rule (Require.measure Model.SR) Test.GenerationRules.monotonicallyIncreasing
     |> Test.withObservationError (Require.state Model.N) (Test.Error.normal Model.σN)
     |> Test.withObservationError (Require.measure Model.SR) (Test.Error.normal Model.σSR)
-    |> Test.withEnvironmentGenBySpan Model.TMax mkTemperature (fun ts -> ts |> float |> (*) 1.<year>)
+    |> Test.withEnvironmentGen Model.TMax mkTemperature
 
 (**
 Here, we have set up the test such that it requires N state to stay within realistic bounds,

@@ -89,6 +89,10 @@ let stemRadius : ModelExpression<mm> =
         (newCumulativeMass |> ShrubModel.Allometry.Proxies.toRadiusMM)
         This
 
+/// Define a function to set the initial biomass, based on the initial
+/// radius.
+let initialMass = ShrubModel.Allometry.Proxies.toBiomassMM (Measure SR)
+
 (**
 Once we have defined the components, we can scaffold them into a model system.
 We can plug in the nestable hypotheses (defined further below) by defining
@@ -111,11 +115,11 @@ let ``base model``
     |> Model.addRateEquation B (``db/dt`` geometricConstraint nLimitation envLimit)
     |> Model.addRateEquation N (``dN/dt`` geometricConstraint nLimitation envLimit plantSoilFeedback)
     |> Model.addMeasure SR stemRadius
+    |> Model.initialiseHiddenStateWith B initialMass
     |> Model.estimateParameter lambda
     |> Model.estimateParameter gammaN
     |> Model.estimateParameter gammaB
     |> Model.useLikelihoodFunction NLL
-
 
 (**
 ### Defining the competing hypotheses

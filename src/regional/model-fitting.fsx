@@ -213,11 +213,9 @@ let startValues (startDate:DatingMethods.Annual) (plant: PlantIndividual.PlantIn
             | None -> failwith "Could not get t0 from ring-width series"
         | _ -> invalidOp "Not applicable"
 
-    let initialMass = Constant initialRadius |> ShrubModel.Allometry.Proxies.toBiomassMM |> ExpressionCompiler.compileSimple
     let initialNitrogen = plant.Environment.[Model.N.Code].Head |> fst
 
     [ Model.SR.Code, initialRadius |> removeUnit
-      Model.B.Code,  initialMass |> removeUnit
       Model.N.Code,  initialNitrogen ]
     |> Map.ofList
 
@@ -291,6 +289,7 @@ let workPackages (shrubs: PlantIndividual.PlantIndividual<Units.millimetre,Datin
 let work = workPackages dataset Model.hypotheses engine Config.resultsDirectory
 
 work
+|> Seq.rev
 |> Seq.iter (Orchestration.OrchestrationMessage.StartWorkPackage >> orchestrator.Post)
 
 System.Console.ReadLine()
