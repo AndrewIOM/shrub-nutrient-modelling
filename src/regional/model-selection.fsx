@@ -12,7 +12,7 @@ for 24 shrub individuals.
 First, we must load Bristlecone:
 *)
 
-#load "model/model.fsx"
+#load "model-fitting.fsx"
 
 open Bristlecone // Opens Bristlecone core library and estimation engine
 open Bristlecone.Language // Open the language for writing Bristlecone models
@@ -30,87 +30,64 @@ may notice that in the work package definition above we used functions from
 this namespace to save the results.
 *)
 
+module Settings =
+    let resultsDirectory = "/Users/andrewmartin/Desktop/Bristlecone-3.0/Regional/"
+
+
+type PlantAnnual = Dendro.PlantIndividual.PlantIndividual<Dendro.Units.millimetre,DatingMethods.Annual,int<year>,int<year>>
+type Hypothesis = Hypotheses.Hypothesis<year>
+
 let saveDiagnostics () =
 
     // 1. Get all results sliced by plant and hypothesis
     let results =
-        let get (subject: Dendro.PlantIndividual.PlantIndividual) (hypothesis: Hypotheses.Hypothesis) =
-            Bristlecone.Data.EstimationResult.loadAll
-                Config.resultsDirectory
+        let get (subject: PlantAnnual) (hypothesis: Hypothesis) =
+            Data.EstimationResult.loadAll
+                toSeries
+                Settings.resultsDirectory
                 subject.Identifier.Value
                 hypothesis.Model
                 hypothesis.ReferenceCode
 
-        Bristlecone.ModelSelection.ResultSet.arrangeResultSets dataset hypotheses get
+        ModelSelection.ResultSet.arrangeResultSets ``Model-fitting``.dataset Model.hypotheses get
 
     // 2. Save convergence statistics to file
     results
     |> Diagnostics.Convergence.gelmanRubinAll
         10000
-        (fun (s: PlantIndividual.PlantIndividual) -> s.Identifier.Value)
-        (fun (h: Hypotheses.Hypothesis) -> h.ReferenceCode)
-    |> Data.Convergence.save Config.resultsDirectory
+        (fun (s: PlantAnnual) -> s.Identifier.Value)
+        (fun (h: Hypothesis) -> h.ReferenceCode)
+    |> Data.Convergence.save Settings.resultsDirectory
 
     // 3. Save Akaike weights to file
     results
-    |> ModelSelection.Akaike.akaikeWeightsForSet (fun (h: Hypotheses.Hypothesis) -> h.ReferenceCode)
+    |> ModelSelection.Akaike.akaikeWeightsForSet (fun (h: Hypothesis) -> h.ReferenceCode)
     |> Seq.map (fun (x, a, b, c) -> x.Identifier.Value, a, b, c)
-    |> Data.ModelSelection.save Config.resultsDirectory
+    |> Data.ModelSelection.save Settings.resultsDirectory
 
-
-    // // 4. Save out logged components
-    // results
-    // |> Seq.map(fun r ->
-    //    Diagnostics.ModelComponents.calculateComponents fit engine r)
+    // 4. Save out logged components
+    // --> TODO Update in Bristlecone to use here.
 
     // 5. One-step ahead predictions
-
-    let bestFits =
-        Seq.allPairs dataset hypotheses
-        |> Seq.map (fun (s, h) ->
-            s, h, Bristlecone.Data.MLE.loadBest Config.resultsDirectory s.Identifier.Value h.Model h.ReferenceCode)
-
     let oneStepPredictions =
-        bestFits
-        |> Seq.map (fun (s, h, mle) ->
+        results
+        |> Seq.filter(fun r -> r.BestResult.IsSome)
+        |> Seq.map (fun resultSet ->
 
-            // 0. Convert x into biomass
-            let preTransform (data: CodedMap<TimeSeries<float>>) =
-                data
-                |> Map.toList
-                |> List.collect (fun (k, v) ->
-                    if k.Value = "x" then
-                        [ (k, v)
-                          ((code "bs").Value,
-                           v |> TimeSeries.map (fun (x, _) -> x * 1.<mm> |> Allometric.Proxies.toBiomassMM)) ]
-                    else
-                        [ (k, v) ])
-                |> Map.ofList
-
-            // 1. Arrange the subject and settings (same as in model-fitting)
-            let shrub = s |> PlantIndividual.toCumulativeGrowth
-            let common = shrub |> PlantIndividual.keepCommonYears
-            let startDate = (common.Environment.[(code "N").Value]).StartDate |> snd
-            let startConditions = startValues startDate shrub
-
-            let e =
-                engine
-                |> Bristlecone.withConditioning (Bristlecone.Conditioning.Custom startConditions)
-
-            let result =
-                Bristlecone.oneStepAhead e h.Model preTransform (Bristlecone.fromDendro common) (mle |> snd |> snd)
+            let prepared = ``Model-fitting``.preTransform resultSet.Subject
+            let oneStepResult = Bristlecone.oneStepAheadDendro prepared.Engine resultSet.Hypothesis.Model Bristlecone.FittingMethod.CumulativeGrowth Model.SR.Code resultSet.Subject id resultSet.BestResult.Value.Parameters
 
             // Save each n-step ahead result to a csv file
             Bristlecone.Data.NStepAhead.save
-                Config.resultsDirectory
-                s.Identifier.Value
-                h.ReferenceCode
-                (mle |> fst)
+                Settings.resultsDirectory
+                resultSet.Subject.Identifier.Value
+                resultSet.Hypothesis.ReferenceCode
+                resultSet.BestResult.Value.ResultId
                 1
-                result
+                oneStepResult
 
-            s.Identifier.Value, h.ReferenceCode, result)
+            resultSet.Subject.Identifier.Value, resultSet.Hypothesis.ReferenceCode, oneStepResult)
 
-    Bristlecone.Data.NStepAhead.saveAllRMSE Config.resultsDirectory oneStepPredictions
+    Bristlecone.Data.NStepAhead.saveAllRMSE Settings.resultsDirectory oneStepPredictions
 
     ()
