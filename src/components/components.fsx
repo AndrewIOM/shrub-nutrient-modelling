@@ -1,6 +1,6 @@
 module ModelComponents
 
-#r "../../packages/Bristlecone/lib/netstandard2.0/Bristlecone.dll"
+#r "nuget: Bristlecone.Dendro,2.0.0"
 #load "constants.fsx"
 
 open Bristlecone
@@ -183,6 +183,7 @@ module Proxies =
     let shrubHeightCm radiusMM =
         radiusMM / 10. |> Allometrics.shrubHeight Constants.Allometrics.k5 Constants.Allometrics.k6
 
+Proxies.toBiomassMM 1.92
 
 module GeometricConstraint = 
 
