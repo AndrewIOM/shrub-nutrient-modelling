@@ -42,7 +42,7 @@ Here, we scaffold an engine from `Bristlecone.mkContinuous`, as we are working
 with continuous-time models.
 *)
 
-let output = Logging.Console.logger 25<iteration>
+let output = Logging.Console.logger 200<iteration>
 
 let engine: EstimationEngine.EstimationEngine<DatingMethods.Annual,int<year>,year,1> =
     Bristlecone.mkContinuous ()
@@ -230,7 +230,7 @@ start values for each shrub, then creates per-hypothesis work packages for that 
 module Config =
 
     let numberOfReplicates = 1
-    let resultsDirectory = "/Users/andrewmartin/Desktop/Bristlecone-3.0/Regional/"
+    let resultsDirectory = "/Users/andrewmartin/Desktop/Bristlecone-3.0/Regional/surrogate-allom/"
     let thinTrace = Some 50
     let endWhen = Optimisation.EndConditions.Profiles.mcmc 100<iteration> engine.LogTo
 

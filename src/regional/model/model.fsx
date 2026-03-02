@@ -41,6 +41,8 @@ Our base model consists of the following parts:
 The code for the parts of the base model is shown below.
 *)
 
+let useSurrogateAllometry = true
+
 // Empirical transform from δ15N to N availability.
 let ``δ15N -> N availability`` n =
     (Constant 100. * n + Constant 309.) / Constant 359.
@@ -81,17 +83,26 @@ let ``dN/dt`` (geomLimit:ModelExpression<g> -> ModelExpression<1>) nLimitation (
     + feedback (State B)
     - nLimitation.UptakeMultiplier * ((geomLimit (State B)) * (State B) * (nLimitation.UptakeRatePerBiomass (``δ15N -> N availability`` This<1>)) * (envLimit))
 
+let biomassToStemRadius =
+    if useSurrogateAllometry
+    then ShrubModel.Allometry.Proxies.toRadiusSurrogate
+    else ShrubModel.Allometry.Proxies.toRadiusMM
+
 /// Measurement variable: stem radius
 let stemRadius : ModelExpression<mm> =
     let oldCumulativeMass = StateAt (-1<``time index``>, B)
     let newCumulativeMass = StateAt (0<``time index``>, B)
+    
     Conditional (newCumulativeMass - oldCumulativeMass .> Constant 0.<g>)
-        (newCumulativeMass |> ShrubModel.Allometry.Proxies.toRadiusMM)
+        (newCumulativeMass |> biomassToStemRadius)
         This
 
 /// Define a function to set the initial biomass, based on the initial
 /// radius.
-let initialMass = ShrubModel.Allometry.Proxies.toBiomassMM (Measure SR)
+let initialMass =
+    if useSurrogateAllometry
+    then ShrubModel.Allometry.Proxies.toBiomassSurrogate (Measure SR)
+    else ShrubModel.Allometry.Proxies.toBiomassMM (Measure SR)
 
 (**
 Once we have defined the components, we can scaffold them into a model system.

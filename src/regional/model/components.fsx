@@ -156,6 +156,28 @@ module Allometry =
                 Constants.Allometrics.salixWoodDensity
             |> Units.cmToMm
 
+        /// Shifted power-law surrogate for shrub allometry.
+        /// Inverse:  R(B) = (B / a)^(1/p) + c
+        /// Forward:  B(R) = a * (R - c)^p
+        ///
+        /// RMSE ≈ 0.16 mm over 1–100 mm. Max error ≈ –0.8 mm at 1–2 mm,
+        /// then fitting tightly across the biologically relevant range.
+        let toRadiusSurrogate, toBiomassSurrogate =
+            // Fitted parameters in (supporting/approximate-allometry.fsx):
+            let a = Constant 0.5124245479<g>
+            let p = Constant 2.62481189
+            let c = Constant 0.05045163691<mm>
+            let inverse (biomassGrams: ModelExpression<g>) =
+                // NB Units tagged on below due to f# typing limitation on powers:
+                let ratio = biomassGrams / a
+                ratio ** (Constant 1. / p) * Constant 1.<mm> + c
+            let forward (radiusMM: ModelExpression<mm>) =
+                let shifted = radiusMM - c
+                let core = shifted / Constant 1.<mm>
+                let powered = core ** p
+                powered * a
+            inverse, forward
+
 
 module GrowthLimitation =
 
